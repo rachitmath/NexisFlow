@@ -1,3 +1,4 @@
+import React, { useState } from 'react';
 import { 
   CheckCircle2, 
   Clock, 
@@ -24,11 +25,14 @@ interface TaskBoardProps {
 }
 
 export const TaskBoard: React.FC<TaskBoardProps> = ({
-  tasks,
-  agents,
+  tasks = [],
+  agents = [],
   onCreateTask,
   onDeleteTask,
 }) => {
+  const safeTasks = Array.isArray(tasks) ? tasks : [];
+  const safeAgents = Array.isArray(agents) ? agents : [];
+
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [copiedResult, setCopiedResult] = useState(false);
@@ -64,7 +68,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
 
   const getAgentName = (agentId: string | null) => {
     if (!agentId) return 'Unassigned';
-    const found = agents.find(a => a.id === agentId);
+    const found = safeAgents.find(a => a.id === agentId);
     return found ? found.role : 'Specialist';
   };
 
@@ -88,7 +92,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
       {/* Kanban Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3">
         {columns.map(col => {
-          const colTasks = tasks.filter(t => t.status === col.status);
+          const colTasks = safeTasks.filter(t => t.status === col.status);
           return (
             <div
               key={col.status}
@@ -199,7 +203,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
                 >
                   <option value="">Leave Unassigned (CEO will assign)</option>
-                  {agents.map(a => (
+                  {safeAgents.map(a => (
                     <option key={a.id} value={a.id}>
                       {a.role}
                     </option>

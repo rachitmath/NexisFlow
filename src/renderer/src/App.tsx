@@ -10,6 +10,7 @@ import { CeoChatDrawer } from './components/dashboard/CeoChatDrawer';
 import { RunStreamModal } from './components/run/RunStreamModal';
 import { WorkspaceSetupModal } from './components/onboarding/WorkspaceSetupModal';
 import { ExecutionLogsView } from './components/dashboard/ExecutionLogsView';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { 
   Company, 
   Agent, 
@@ -438,83 +439,85 @@ export const App: React.FC = () => {
 
         {/* Dynamic Views */}
         <div className="flex-1 overflow-y-auto p-6">
-          {selectedCompany ? (
-            <>
-              {activeTab === 'dashboard' && (
-                <CompanyDashboard
-                  company={selectedCompany}
-                  departments={departments}
-                  agents={agents}
-                  tasks={tasks}
-                  recentRuns={recentRuns}
-                  pendingApprovals={pendingApprovals}
-                  deliverablesCount={deliverablesCount}
-                  models={models}
-                  onStartRun={activeRun?.status === 'running' ? () => setIsRunModalOpen(true) : handleStartRun}
-                  onOpenCeoChat={() => setIsCeoChatOpen(true)}
-                  onNavigateTab={setActiveTab}
-                  onOpenLogs={(agentRole) => {
-                    setSelectedAgentLogFilter(agentRole || null);
-                    setActiveTab('logs');
-                  }}
-                  onOpenSettings={() => setIsSettingsOpen(true)}
-                  onUpdateModels={handleUpdateCompanyModels}
-                  onDeleteAgent={handleDeleteAgent}
-                  isRunActive={activeRun?.status === 'running' || activeRun?.status === 'paused'}
-                />
-              )}
+          <ErrorBoundary key={activeTab} fallbackTitle={`${activeTab.toUpperCase()} View Error`}>
+            {selectedCompany ? (
+              <>
+                {activeTab === 'dashboard' && (
+                  <CompanyDashboard
+                    company={selectedCompany}
+                    departments={departments}
+                    agents={agents}
+                    tasks={tasks}
+                    recentRuns={recentRuns}
+                    pendingApprovals={pendingApprovals}
+                    deliverablesCount={deliverablesCount}
+                    models={models}
+                    onStartRun={activeRun?.status === 'running' ? () => setIsRunModalOpen(true) : handleStartRun}
+                    onOpenCeoChat={() => setIsCeoChatOpen(true)}
+                    onNavigateTab={setActiveTab}
+                    onOpenLogs={(agentRole) => {
+                      setSelectedAgentLogFilter(agentRole || null);
+                      setActiveTab('logs');
+                    }}
+                    onOpenSettings={() => setIsSettingsOpen(true)}
+                    onUpdateModels={handleUpdateCompanyModels}
+                    onDeleteAgent={handleDeleteAgent}
+                    isRunActive={activeRun?.status === 'running' || activeRun?.status === 'paused'}
+                  />
+                )}
 
-              {activeTab === 'tasks' && (
-                <TaskBoard
-                  tasks={tasks}
-                  agents={agents}
-                  onCreateTask={handleCreateTask}
-                  onDeleteTask={handleDeleteTask}
-                />
-              )}
+                {activeTab === 'tasks' && (
+                  <TaskBoard
+                    tasks={tasks}
+                    agents={agents}
+                    onCreateTask={handleCreateTask}
+                    onDeleteTask={handleDeleteTask}
+                  />
+                )}
 
-              {activeTab === 'deliverables' && (
-                <DeliverablesView
-                  companyId={selectedCompany.id}
-                  runs={recentRuns}
-                />
-              )}
+                {activeTab === 'deliverables' && (
+                  <DeliverablesView
+                    companyId={selectedCompany.id}
+                    runs={recentRuns}
+                  />
+                )}
 
-              {activeTab === 'approvals' && (
-                <ApprovalsInbox
-                  approvals={pendingApprovals}
-                  onRespond={handleResolveApproval}
-                />
-              )}
+                {activeTab === 'approvals' && (
+                  <ApprovalsInbox
+                    approvals={pendingApprovals}
+                    onRespond={handleResolveApproval}
+                  />
+                )}
 
-              {activeTab === 'logs' && (
-                <ExecutionLogsView
-                  company={selectedCompany}
-                  agents={agents}
-                  runs={recentRuns}
-                  activeRun={activeRun}
-                  liveEvents={runEvents}
-                  initialAgentFilter={selectedAgentLogFilter}
-                  onPauseRun={handlePauseRun}
-                  onResumeRun={handleResumeRun}
-                  onStopRun={handleStopRun}
-                />
-              )}
-            </>
-          ) : (
-            <div className="h-full flex flex-col items-center justify-center text-center p-8 space-y-3">
-              <h3 className="text-lg font-bold text-white">Welcome to NexisFlow</h3>
-              <p className="text-xs text-slate-400 max-w-md">
-                Create a company and set an ambitious goal. A CEO agent will recruit worker agents and execute your ideas autonomously.
-              </p>
-              <button
-                onClick={() => setIsNewCompanyOpen(true)}
-                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20"
-              >
-                Incorporate Your First Company
-              </button>
-            </div>
-          )}
+                {activeTab === 'logs' && (
+                  <ExecutionLogsView
+                    company={selectedCompany}
+                    agents={agents}
+                    runs={recentRuns}
+                    activeRun={activeRun}
+                    liveEvents={runEvents}
+                    initialAgentFilter={selectedAgentLogFilter}
+                    onPauseRun={handlePauseRun}
+                    onResumeRun={handleResumeRun}
+                    onStopRun={handleStopRun}
+                  />
+                )}
+              </>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-center p-8 space-y-3">
+                <h3 className="text-lg font-bold text-white">Welcome to NexisFlow</h3>
+                <p className="text-xs text-slate-400 max-w-md">
+                  Create a company and set an ambitious goal. A CEO agent will recruit worker agents and execute your ideas autonomously.
+                </p>
+                <button
+                  onClick={() => setIsNewCompanyOpen(true)}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20"
+                >
+                  Incorporate Your First Company
+                </button>
+              </div>
+            )}
+          </ErrorBoundary>
         </div>
       </main>
 
