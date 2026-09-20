@@ -23,7 +23,10 @@
     "ceo",
     "workers"
   ],
-  "author": "",
+  "author": {
+    "name": "Rachit Math",
+    "email": "maintainer@nexisflow.com"
+  },
   "license": "MIT",
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.58",
