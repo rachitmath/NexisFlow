@@ -1,9 +1,48 @@
 import { AppDatabase } from '../db/database';
 import { WorkspaceManager } from '../workspace/workspaceManager';
 import { ProviderRegistry } from '../providers/registry';
-import { ProviderChatMessage, ProviderTool } from '../providers/types';
+import { ProviderChatMessage, ProviderTool, ProviderChatResult } from '../providers/types';
 import { MODEL_PRICING } from '../../shared/constants';
 import { RunEvent, Agent } from '../../shared/types';
+import { BudgetGuard } from '../limits/budgetGuard';
+
+function isRateLimitError(err: any): boolean {
+  if (!err) return false;
+  if (err.status === 429 || err.statusCode === 429) return true;
+  const msg = (err.message || String(err)).toLowerCase();
+  return (
+    msg.includes('429') ||
+    msg.includes('rate limit') ||
+    msg.includes('rate_limit') ||
+    msg.includes('too many requests') ||
+    msg.includes('resource exhausted') ||
+    msg.includes('quota exceeded') ||
+    msg.includes('overloaded')
+  );
+}
+
+function getRetryAfterDelayMs(err: any, attempt: number): number {
+  const retryAfter = err?.headers?.['retry-after'] ||
+    err?.response?.headers?.get?.('retry-after') ||
+    err?.retryAfter;
+
+  if (retryAfter !== undefined && retryAfter !== null) {
+    const seconds = Number(retryAfter);
+    if (!isNaN(seconds) && seconds > 0) {
+      return Math.min(seconds * 1000, 60000);
+    }
+    const dateMs = Date.parse(String(retryAfter));
+    if (!isNaN(dateMs)) {
+      const diff = dateMs - Date.now();
+      if (diff > 0) return Math.min(diff, 60000);
+    }
+  }
+
+  const isTest = process.env.NODE_ENV === 'test';
+  const base = isTest ? 30 : 1000;
+  const jitter = isTest ? Math.random() * 10 : Math.random() * 500;
+  return Math.min(base * Math.pow(2, attempt) + jitter, 30000);
+}
 
 export interface AgentLoopOptions {
   companyId: string;
@@ -22,11 +61,13 @@ export class AgentLoop {
   private db: AppDatabase;
   private workspace: WorkspaceManager;
   private registry: ProviderRegistry;
+  private budgetGuard: BudgetGuard;
 
-  constructor(db: AppDatabase, workspace: WorkspaceManager, registry: ProviderRegistry) {
+  constructor(db: AppDatabase, workspace: WorkspaceManager, registry: ProviderRegistry, budgetGuard?: BudgetGuard) {
     this.db = db;
     this.workspace = workspace;
     this.registry = registry;
+    this.budgetGuard = budgetGuard || new BudgetGuard(db);
   }
 
   public async run(options: AgentLoopOptions): Promise<{ finished: boolean; reason?: string; lastResponse?: string }> {
@@ -77,47 +118,123 @@ export class AgentLoop {
       }
       step++;
 
-      const adapter = this.registry.getAdapterForModel(agent.model);
+      // Concurrency-safe budget reservation
+      const estimatedCost = this.budgetGuard.estimateCost(agent.model, messages, 2000);
+      const reserveResult = await this.budgetGuard.reserve({
+        companyId,
+        runId,
+        estimatedCost,
+        agentId: agent.id,
+      });
 
-      let stepText = '';
-      const stepToolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
-
-      try {
-        const result = await adapter.chat(messages, tools, {
-          model: agent.model,
-          abortSignal,
-          onToken: (token) => {
-            stepText += token;
-            onEvent({
-              runId,
-              companyId,
-              type: 'token',
-              timestamp: new Date().toISOString(),
-              data: {
-                agentId: agent.id,
-                agentRole: agent.role,
-                token,
-              },
-            });
-          },
-          onToolCall: (tc) => {
-            stepToolCalls.push(tc);
-            onEvent({
-              runId,
-              companyId,
-              type: 'tool_call',
-              timestamp: new Date().toISOString(),
-              data: {
-                agentId: agent.id,
-                agentRole: agent.role,
-                toolName: tc.name,
-                toolArgs: tc.args,
-              },
-            });
-          },
+      if (!reserveResult.allowed) {
+        this.db.updateRun(runId, { status: 'paused' });
+        onEvent({
+          runId,
+          companyId,
+          type: 'run_status_change',
+          timestamp: new Date().toISOString(),
+          data: { status: 'paused' },
         });
 
-        // Compute cost
+        const approval = this.budgetGuard.raiseBudgetApproval(
+          companyId,
+          runId,
+          agent.id,
+          `Execution paused due to budget limit: ${reserveResult.error}`,
+          {
+            estimatedCost,
+            limitType: reserveResult.limitType,
+            agentId: agent.id,
+            agentRole: agent.role,
+            model: agent.model,
+          }
+        );
+
+        onEvent({
+          runId,
+          companyId,
+          type: 'approval_needed',
+          timestamp: new Date().toISOString(),
+          data: { approval },
+        });
+
+        return { finished: false, reason: 'budget_limit_exceeded', lastResponse: reserveResult.error };
+      }
+
+      try {
+        const adapter = this.registry.getAdapterForModel(agent.model);
+
+        let stepText = '';
+        let streamedTokens = 0;
+        const stepToolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
+        let result: ProviderChatResult;
+
+        try {
+        const MAX_RATE_LIMIT_RETRIES = 3;
+        let attempt = 0;
+
+        while (true) {
+          try {
+            result = await adapter.chat(messages, tools, {
+              model: agent.model,
+              abortSignal,
+              onToken: (token) => {
+                streamedTokens++;
+                stepText += token;
+                onEvent({
+                  runId,
+                  companyId,
+                  type: 'token',
+                  timestamp: new Date().toISOString(),
+                  data: {
+                    agentId: agent.id,
+                    agentRole: agent.role,
+                    token,
+                  },
+                });
+              },
+              onToolCall: (tc) => {
+                stepToolCalls.push(tc);
+                onEvent({
+                  runId,
+                  companyId,
+                  type: 'tool_call',
+                  timestamp: new Date().toISOString(),
+                  data: {
+                    agentId: agent.id,
+                    agentRole: agent.role,
+                    toolName: tc.name,
+                    toolArgs: tc.args,
+                  },
+                });
+              },
+            });
+            break;
+          } catch (err: any) {
+            if (abortSignal.aborted) throw err;
+            if (isRateLimitError(err) && attempt < MAX_RATE_LIMIT_RETRIES) {
+              attempt++;
+              const delayMs = getRetryAfterDelayMs(err, attempt);
+              console.warn(`[AgentLoop] Rate limit (429) encountered. Retrying in ${delayMs}ms (attempt ${attempt}/${MAX_RATE_LIMIT_RETRIES})...`);
+              await new Promise<void>((res, rej) => {
+                const timeout = setTimeout(res, delayMs);
+                const onAbort = () => {
+                  clearTimeout(timeout);
+                  rej(new Error('aborted'));
+                };
+                abortSignal.addEventListener('abort', onAbort, { once: true });
+              });
+              continue;
+            }
+            if (isRateLimitError(err) && attempt >= MAX_RATE_LIMIT_RETRIES) {
+              throw new Error(`Rate limit (429) exceeded after ${MAX_RATE_LIMIT_RETRIES} retries: ${err?.message || 'Provider rate limit'}`);
+            }
+            throw err;
+          }
+        }
+
+        // Compute cost from actual usage
         const rate = MODEL_PRICING[agent.model] || { promptPerM: 1.0, completionPerM: 3.0 };
         const cost = (result.usage.promptTokens / 1_000_000) * rate.promptPerM +
                      (result.usage.completionTokens / 1_000_000) * rate.completionPerM;
@@ -148,6 +265,40 @@ export class AgentLoop {
             },
           },
         });
+      } catch (err: any) {
+        // Aborted streams record partial usage if tokens were generated
+        if (streamedTokens > 0) {
+          const rate = MODEL_PRICING[agent.model] || { promptPerM: 1.0, completionPerM: 3.0 };
+          const partialCost = (streamedTokens / 1_000_000) * rate.completionPerM;
+          this.db.recordUsage({
+            companyId,
+            runId,
+            agentId: agent.id,
+            model: agent.model,
+            promptTokens: 0,
+            completionTokens: streamedTokens,
+            totalTokens: streamedTokens,
+            estimatedCost: partialCost,
+          });
+          onEvent({
+            runId,
+            companyId,
+            type: 'usage_update',
+            timestamp: new Date().toISOString(),
+            data: {
+              usage: {
+                promptTokens: 0,
+                completionTokens: streamedTokens,
+                totalTokens: streamedTokens,
+                cost: partialCost,
+              },
+            },
+          });
+        }
+        throw err;
+      } finally {
+        await this.budgetGuard.release(reserveResult.reservationId);
+      }
 
         // Save assistant message to DB
         this.db.addMessage({

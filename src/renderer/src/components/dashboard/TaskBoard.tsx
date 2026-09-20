@@ -15,7 +15,8 @@ import {
   Copy,
   Check,
   PlayCircle,
-  ArrowRight
+  ArrowRight,
+  AlertCircle
 } from 'lucide-react';
 import { Task, TaskStatus, Agent } from '@shared/types';
 
@@ -169,10 +170,10 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                       <h4 className="text-xs font-semibold text-white leading-snug line-clamp-2">
                         {task.title}
                       </h4>
-                      {task.retryCount > 0 && (
+                      {(task.reviewAttempts > 0 || task.retryCount > 0) && (
                         <span className="shrink-0 flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
                           <RotateCw className="w-2.5 h-2.5" />
-                          <span>Retry {task.retryCount}/2</span>
+                          <span>Retry {task.reviewAttempts || task.retryCount}/2</span>
                         </span>
                       )}
                     </div>
@@ -183,14 +184,30 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                       </p>
                     )}
 
+                    {/* Queued badge */}
+                    {task.dispatchState === 'queued' && (
+                      <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-amber-500/10 border border-amber-500/25 text-[10px] text-amber-300 font-medium">
+                        <Clock className="w-2.5 h-2.5 animate-pulse text-amber-400" />
+                        <span>Queued</span>
+                      </div>
+                    )}
+
                     {/* In-progress active badge */}
-                    {task.status === 'in_progress' && (
+                    {task.status === 'in_progress' && (task.dispatchState === 'running' || !task.dispatchState) && (
                       <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-indigo-500/10 border border-indigo-500/25 text-[10px] text-indigo-300 font-medium">
                         <span className="relative flex h-2 w-2">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
                           <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
                         </span>
                         <span>Agent active on task...</span>
+                      </div>
+                    )}
+
+                    {/* Needs Attention Alert */}
+                    {task.needsAttention && (
+                      <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-rose-500/10 border border-rose-500/25 text-[10px] text-rose-300 font-medium">
+                        <AlertCircle className="w-2.5 h-2.5 text-rose-400" />
+                        <span>Needs Attention</span>
                       </div>
                     )}
 

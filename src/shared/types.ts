@@ -31,6 +31,7 @@ export interface AppSettings {
   autoDetectOllama: boolean;
   workspaceDir?: string;
   onboardingCompleted?: boolean;
+  maxConcurrentWorkers?: number;
 }
 
 export interface Company {
@@ -97,6 +98,10 @@ export interface Task {
   status: TaskStatus;
   dependencies: string[];
   retryCount: number;
+  reviewAttempts: number;
+  dispatchState?: 'queued' | 'running' | null;
+  claimedAt?: string | null;
+  needsAttention?: boolean;
   feedback: string | null;
   result: string | null;
   createdAt: string;
@@ -152,7 +157,7 @@ export interface Approval {
   runId: string;
   companyId: string;
   agentId: string;
-  actionType: 'hire_agent' | 'budget_threshold' | 'out_of_bounds_write' | 'custom';
+  actionType: 'hire_agent' | 'budget_threshold' | 'budget_reservation' | 'out_of_bounds_write' | 'task_review_limit' | 'custom';
   description: string;
   details: Record<string, unknown>;
   status: 'pending' | 'approved' | 'denied';
@@ -232,6 +237,8 @@ export interface RunEvent {
     toolArgs?: Record<string, unknown>;
     toolResult?: unknown;
     status?: string;
+    needsAttention?: boolean;
+    dispatchState?: 'queued' | 'running' | null;
     usage?: {
       promptTokens: number;
       completionTokens: number;

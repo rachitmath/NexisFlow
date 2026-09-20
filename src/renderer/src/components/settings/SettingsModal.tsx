@@ -559,6 +559,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-40 bg-dark-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
+
+              <div className="pt-4 border-t border-slate-800 space-y-3">
+                <div className="flex items-center space-x-2">
+                  <Cpu className="w-4 h-4 text-indigo-400" />
+                  <h4 className="text-xs font-semibold text-white">Worker Concurrency Pool</h4>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Limits concurrent specialist worker loops. Excess in-progress tasks wait in a FIFO queue.
+                </p>
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">
+                    Max Concurrent Workers
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={settings?.maxConcurrentWorkers ?? 3}
+                    onChange={(e) => {
+                      const val = Math.max(1, parseInt(e.target.value, 10) || 3);
+                      if (settings) {
+                        const updated = { ...settings, maxConcurrentWorkers: val };
+                        setSettings(updated);
+                        api.saveSettings(updated);
+                      }
+                    }}
+                    className="w-40 bg-dark-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                </div>
+              </div>
             </div>
           )}
 

@@ -43,10 +43,22 @@ export class AppDatabase {
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN reports_to TEXT`); } catch {}
     try { this.db.exec(`ALTER TABLE agents ADD COLUMN level TEXT DEFAULT 'specialist'`); } catch {}
     try { this.db.exec(`ALTER TABLE tasks ADD COLUMN department_id TEXT`); } catch {}
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN dispatch_state TEXT DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN claimed_at DATETIME DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN review_attempts INTEGER DEFAULT 0`); } catch {}
+    try { this.db.exec(`ALTER TABLE tasks ADD COLUMN needs_attention INTEGER DEFAULT 0`); } catch {}
   }
 
   public getRawDb(): Database.Database {
     return this.db;
+  }
+
+  public isOpen(): boolean {
+    try {
+      return Boolean(this.db && this.db.open);
+    } catch {
+      return false;
+    }
   }
 
   public close() {
@@ -538,6 +550,10 @@ Operational Rules:
       status: r.status,
       dependencies: JSON.parse(r.dependencies || '[]'),
       retryCount: r.retry_count,
+      reviewAttempts: r.review_attempts ?? 0,
+      dispatchState: r.dispatch_state || null,
+      claimedAt: r.claimed_at || null,
+      needsAttention: Boolean(r.needs_attention),
       feedback: r.feedback,
       result: r.result,
       createdAt: r.created_at,
@@ -589,6 +605,7 @@ Operational Rules:
     description: string;
     dependencies?: string[];
     assignedTo?: string | null;
+    dispatchState?: 'queued' | 'running' | null;
   }): Task {
     const id = 'task_' + Math.random().toString(36).substring(2, 11);
     const now = new Date().toISOString();
@@ -600,8 +617,8 @@ Operational Rules:
     }
 
     this.db.prepare(`
-      INSERT INTO tasks (id, goal_id, company_id, department_id, title, description, assigned_to, status, dependencies, retry_count, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, 0, ?, ?)
+      INSERT INTO tasks (id, goal_id, company_id, department_id, title, description, assigned_to, status, dependencies, retry_count, review_attempts, dispatch_state, claimed_at, needs_attention, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, 0, 0, ?, NULL, 0, ?, ?)
     `).run(
       id,
       goalId,
@@ -611,6 +628,7 @@ Operational Rules:
       task.description,
       task.assignedTo || null,
       JSON.stringify(task.dependencies || []),
+      task.dispatchState || null,
       now,
       now
     );
@@ -626,6 +644,10 @@ Operational Rules:
       status: 'todo',
       dependencies: task.dependencies || [],
       retryCount: 0,
+      reviewAttempts: 0,
+      dispatchState: task.dispatchState || null,
+      claimedAt: null,
+      needsAttention: false,
       feedback: null,
       result: null,
       createdAt: now,
@@ -646,6 +668,10 @@ Operational Rules:
     if (updates.status !== undefined) { fields.push('status = ?'); values.push(updates.status); }
     if (updates.dependencies !== undefined) { fields.push('dependencies = ?'); values.push(JSON.stringify(updates.dependencies)); }
     if (updates.retryCount !== undefined) { fields.push('retry_count = ?'); values.push(updates.retryCount); }
+    if (updates.reviewAttempts !== undefined) { fields.push('review_attempts = ?'); values.push(updates.reviewAttempts); }
+    if (updates.dispatchState !== undefined) { fields.push('dispatch_state = ?'); values.push(updates.dispatchState); }
+    if (updates.claimedAt !== undefined) { fields.push('claimed_at = ?'); values.push(updates.claimedAt); }
+    if (updates.needsAttention !== undefined) { fields.push('needs_attention = ?'); values.push(updates.needsAttention ? 1 : 0); }
     if (updates.feedback !== undefined) { fields.push('feedback = ?'); values.push(updates.feedback); }
     if (updates.result !== undefined) { fields.push('result = ?'); values.push(updates.result); }
 
@@ -655,6 +681,28 @@ Operational Rules:
 
     this.db.prepare(`UPDATE tasks SET ${fields.join(', ')} WHERE id = ?`).run(...values);
     return this.getTask(id);
+  }
+
+  public claimTask(taskId: string): boolean {
+    const now = new Date().toISOString();
+    return this.db.transaction(() => {
+      const res = this.db.prepare(`
+        UPDATE tasks
+        SET status = 'in_progress', claimed_at = ?, dispatch_state = 'queued', updated_at = ?
+        WHERE id = ? AND status IN ('todo', 'in_review')
+      `).run(now, now, taskId);
+      return res.changes === 1;
+    })();
+  }
+
+  public reconcileStaleTasks(): number {
+    const now = new Date().toISOString();
+    const res = this.db.prepare(`
+      UPDATE tasks
+      SET status = 'todo', dispatch_state = NULL, updated_at = ?
+      WHERE dispatch_state IN ('queued', 'running') OR status = 'in_progress'
+    `).run(now);
+    return res.changes;
   }
 
   public deleteTask(taskId: string): boolean {

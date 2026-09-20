@@ -23,6 +23,14 @@ export class CompanyOrchestrator {
   private workspace: WorkspaceManager;
   private registry: ProviderRegistry;
   private budgetGuard: BudgetGuard;
+  private maxConcurrentWorkers: number = 3;
+  private workerQueue: Array<{
+    taskId: string;
+    company: Company;
+    run: Run;
+    worker: Agent;
+    feedback?: string;
+  }> = [];
   private activeRuns: Map<string, { abortController: AbortController; paused: boolean }> = new Map();
   private activeTaskWorkers: Map<string, { abortController: AbortController }> = new Map();
   private eventListeners: Set<(event: RunEvent) => void> = new Set();
@@ -38,6 +46,10 @@ export class CompanyOrchestrator {
     this.workspace = workspace;
     this.registry = registry;
     this.budgetGuard = budgetGuard;
+
+    const settings = this.db.getSetting<any>('settings', {});
+    this.maxConcurrentWorkers = settings?.maxConcurrentWorkers ?? 3;
+
     try {
       const reconciled = this.db.reconcileStaleRuns();
       if (reconciled > 0) {
@@ -45,6 +57,15 @@ export class CompanyOrchestrator {
       }
     } catch (err) {
       console.warn('[Orchestrator] Could not reconcile stale runs:', err);
+    }
+
+    try {
+      const reconciledTasks = this.db.reconcileStaleTasks();
+      if (reconciledTasks > 0) {
+        console.log(`[Orchestrator] Reconciled ${reconciledTasks} stale queued/running task(s) from previous session (reset to todo).`);
+      }
+    } catch (err) {
+      console.warn('[Orchestrator] Could not reconcile stale tasks:', err);
     }
   }
 
@@ -147,15 +168,71 @@ export class CompanyOrchestrator {
     });
   }
 
+  public getMaxConcurrentWorkers(): number {
+    return this.maxConcurrentWorkers;
+  }
+
+  public setMaxConcurrentWorkers(limit: number): void {
+    this.maxConcurrentWorkers = Math.max(1, limit);
+    this.processQueue();
+  }
+
+  public getWorkerQueue(): Array<{ taskId: string }> {
+    return [...this.workerQueue];
+  }
+
+  public getRunningWorkersCount(): number {
+    return this.activeTaskWorkers.size;
+  }
+
+  public isTaskRunning(taskId: string): boolean {
+    return this.activeTaskWorkers.has(taskId);
+  }
+
+  public isTaskQueued(taskId: string): boolean {
+    return this.workerQueue.some(item => item.taskId === taskId);
+  }
+
+  public isTaskActiveOrQueued(taskId: string): boolean {
+    return this.isTaskRunning(taskId) || this.isTaskQueued(taskId);
+  }
+
   public cancelTaskWorker(taskId: string): void {
+    // 1. If queued, remove from FIFO queue
+    const queueIdx = this.workerQueue.findIndex(q => q.taskId === taskId);
+    if (queueIdx !== -1) {
+      this.workerQueue.splice(queueIdx, 1);
+      this.db.updateTask(taskId, { dispatchState: null });
+      this.emit({
+        runId: '',
+        companyId: '',
+        type: 'task_status_change',
+        timestamp: new Date().toISOString(),
+        data: { taskId, status: 'cancelled' },
+      });
+    }
+
+    // 2. If running, abort
     const active = this.activeTaskWorkers.get(taskId);
     if (active) {
       active.abortController.abort();
       this.activeTaskWorkers.delete(taskId);
+      this.db.updateTask(taskId, { dispatchState: null });
     }
+
+    this.processQueue();
   }
 
   public cancelAllWorkersForCompany(companyId: string): void {
+    // Remove queued tasks for this company
+    this.workerQueue = this.workerQueue.filter(item => {
+      if (item.company.id === companyId) {
+        this.db.updateTask(item.taskId, { dispatchState: null });
+        return false;
+      }
+      return true;
+    });
+
     for (const [runId, active] of this.activeRuns.entries()) {
       const run = this.db.getRun(runId);
       if (run && run.companyId === companyId) {
@@ -168,32 +245,46 @@ export class CompanyOrchestrator {
       if (task && task.companyId === companyId) {
         active.abortController.abort();
         this.activeTaskWorkers.delete(taskId);
+        this.db.updateTask(taskId, { dispatchState: null });
       }
     }
+    this.processQueue();
   }
 
-  public async dispatchInProgressTask(taskId: string): Promise<void> {
-    const task = this.db.getTask(taskId);
-    if (!task || task.status !== 'in_progress' || !task.assignedTo) {
-      return;
+  public async dispatchInProgressTask(taskId: string, feedback?: string): Promise<boolean> {
+    // Duplicate dispatches become no-ops if already running or queued
+    if (this.activeTaskWorkers.has(taskId) || this.workerQueue.some(item => item.taskId === taskId)) {
+      return false;
     }
 
-    if (this.activeTaskWorkers.has(taskId)) {
-      return;
+    const task = this.db.getTask(taskId);
+    if (!task || !task.assignedTo) {
+      return false;
+    }
+
+    // Atomic compare-and-swap claim if coming from todo or in_review
+    if (task.status === 'todo' || task.status === 'in_review') {
+      const claimed = this.db.claimTask(taskId);
+      if (!claimed) {
+        // Concurrently claimed by another dispatch
+        return false;
+      }
+    } else if (task.status === 'in_progress') {
+      this.db.updateTask(taskId, { dispatchState: 'queued' });
+    } else {
+      return false;
     }
 
     const company = this.db.getCompany(task.companyId);
-    if (!company) return;
+    if (!company) return false;
 
     const worker = this.db.getAgent(task.assignedTo) || this.db.findAgentByIdOrRole(company.id, task.assignedTo);
-    if (!worker) return;
+    if (!worker) return false;
 
     const runs = this.db.listRuns(company.id);
     let run = runs.find(r => r.status === 'running');
-    let createdRun = false;
     if (!run) {
       run = this.db.createRun(company.id);
-      createdRun = true;
       this.emit({
         runId: run.id,
         companyId: company.id,
@@ -203,36 +294,89 @@ export class CompanyOrchestrator {
       });
     }
 
-    const abortController = new AbortController();
-    this.activeTaskWorkers.set(taskId, { abortController });
+    // Enqueue task into FIFO queue
+    this.workerQueue.push({
+      taskId,
+      company,
+      run,
+      worker,
+      feedback,
+    });
 
-    (async () => {
-      try {
-        await this.executeWorkerTask(company, run!, worker, task, abortController.signal);
-      } catch (err: any) {
-        if (!abortController.signal.aborted) {
-          console.error(`Task worker error for task ${taskId}:`, err);
-        }
-      } finally {
-        this.activeTaskWorkers.delete(taskId);
-        if (createdRun && run) {
-          this.db.updateRun(run.id, { status: 'completed', finishedAt: new Date().toISOString() });
-          this.emit({
-            runId: run.id,
-            companyId: company.id,
-            type: 'run_status_change',
-            timestamp: new Date().toISOString(),
-            data: { status: 'completed' },
-          });
-        }
+    this.emit({
+      runId: run.id,
+      companyId: company.id,
+      type: 'task_status_change',
+      timestamp: new Date().toISOString(),
+      data: { taskId: task.id, taskTitle: task.title, status: 'in_progress', assignedTo: worker.role },
+    });
+
+    this.processQueue();
+    return true;
+  }
+
+  private processQueue(): void {
+    while (this.activeTaskWorkers.size < this.maxConcurrentWorkers && this.workerQueue.length > 0) {
+      const next = this.workerQueue.shift();
+      if (!next) break;
+
+      const task = this.db.getTask(next.taskId);
+      if (!task || task.status !== 'in_progress') {
+        continue;
       }
-    })();
+
+      // Transition dispatch_state to 'running'
+      this.db.updateTask(next.taskId, { dispatchState: 'running' });
+      this.emit({
+        runId: next.run.id,
+        companyId: next.company.id,
+        type: 'task_status_change',
+        timestamp: new Date().toISOString(),
+        data: { taskId: task.id, taskTitle: task.title, status: 'in_progress', assignedTo: next.worker.role },
+      });
+
+      const abortController = new AbortController();
+      this.activeTaskWorkers.set(next.taskId, { abortController });
+
+      (async () => {
+        try {
+          await this.executeWorkerTask(next.company, next.run, next.worker, task, abortController.signal, next.feedback);
+        } catch (err: any) {
+          if (!abortController.signal.aborted) {
+            console.error(`Task worker error for task ${next.taskId}:`, err);
+            if (this.db.isOpen()) {
+              this.db.updateTask(next.taskId, {
+                status: 'failed',
+                feedback: err?.message || 'Worker execution error',
+                dispatchState: null,
+              });
+              this.emit({
+                runId: next.run.id,
+                companyId: next.company.id,
+                type: 'task_status_change',
+                timestamp: new Date().toISOString(),
+                data: { taskId: next.taskId, taskTitle: task.title, status: 'failed' },
+              });
+            }
+          }
+        } finally {
+          this.activeTaskWorkers.delete(next.taskId);
+          if (this.db.isOpen()) {
+            const currentTask = this.db.getTask(next.taskId);
+            if (currentTask && currentTask.dispatchState !== null) {
+              this.db.updateTask(next.taskId, { dispatchState: null });
+            }
+          }
+          this.processQueue();
+        }
+      })();
+    }
   }
 
   public async checkAndDispatchAssignedTasks(companyId: string): Promise<void> {
     const tasks = this.db.listTasks(companyId);
     for (const task of tasks) {
-      if (task.status === 'in_progress' && task.assignedTo && !this.activeTaskWorkers.has(task.id)) {
+      if (task.status === 'in_progress' && task.assignedTo && !this.isTaskActiveOrQueued(task.id)) {
         await this.dispatchInProgressTask(task.id);
       }
     }
@@ -474,7 +618,7 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
     options: RunOptions | undefined,
     abortSignal: AbortSignal
   ): Promise<void> {
-    const agentLoop = new AgentLoop(this.db, this.workspace, this.registry);
+    const agentLoop = new AgentLoop(this.db, this.workspace, this.registry, this.budgetGuard);
     const limits = this.budgetGuard.getRunLimits(options);
 
     // CEO Tool Executor
@@ -706,19 +850,11 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
           return { error: `Agent not found for identifier: "${rawAgentId}". Check check_status or hire_agent first.` };
         }
 
-        this.db.updateTask(task.id, { assignedTo: worker.id, status: 'in_progress' });
+        this.db.updateTask(task.id, { assignedTo: worker.id });
+
+        // Trigger worker task execution through concurrency queue
+        await this.dispatchInProgressTask(task.id);
         const updatedTask = this.db.getTask(task.id) || task;
-
-        this.emit({
-          runId: run.id,
-          companyId: company.id,
-          type: 'task_status_change',
-          timestamp: new Date().toISOString(),
-          data: { taskId: updatedTask.id, taskTitle: updatedTask.title, status: 'in_progress', assignedTo: worker.role },
-        });
-
-        // Trigger worker agent execution
-        await this.executeWorkerTask(company, run, worker, updatedTask, abortSignal);
 
         return { success: true, taskId: updatedTask.id, taskTitle: updatedTask.title, assignedTo: worker.role, status: 'dispatched_to_worker' };
       }
@@ -730,7 +866,7 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
         const notes = this.db.listMemoryNotes(company.id);
         return {
           departments: departments.map(d => ({ id: d.id, name: d.name, headAgentId: d.headAgentId })),
-          tasks: tasks.map(t => ({ id: t.id, title: t.title, status: t.status, assignedTo: t.assignedTo, retryCount: t.retryCount })),
+          tasks: tasks.map(t => ({ id: t.id, title: t.title, status: t.status, assignedTo: t.assignedTo, retryCount: t.retryCount, reviewAttempts: t.reviewAttempts, needsAttention: t.needsAttention, dispatchState: t.dispatchState })),
           agents: agents.map(a => ({ id: a.id, role: a.role, level: a.level, departmentId: a.departmentId, reportsTo: a.reportsTo, status: a.status })),
           notesCount: notes.length,
         };
@@ -751,7 +887,7 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
         if (!task) return { error: `Task not found for "${rawTaskId}"` };
 
         if (decision === 'accept') {
-          this.db.updateTask(task.id, { status: 'completed', feedback });
+          this.db.updateTask(task.id, { status: 'completed', feedback, dispatchState: null });
           this.emit({
             runId: run.id,
             companyId: company.id,
@@ -761,36 +897,77 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
           });
           return { success: true, taskId: task.id, status: 'completed', message: 'Work accepted.' };
         } else {
-          // Reject with feedback
-          const newRetry = task.retryCount + 1;
-          if (newRetry > DEFAULT_LIMITS.MAX_RETRIES_PER_TASK) {
-            this.db.updateTask(task.id, { status: 'failed', feedback, retryCount: newRetry });
+          // Reject with feedback: increment review_attempts
+          const currentAttempts = task.reviewAttempts ?? 0;
+          const newAttempts = currentAttempts + 1;
+          const maxReviewRetries = DEFAULT_LIMITS.MAX_RETRIES_PER_TASK; // 2
+
+          if (newAttempts > maxReviewRetries) {
+            // Stop retrying, flag task as needs_attention, create approval request asking user to decide
+            this.db.updateTask(task.id, {
+              reviewAttempts: newAttempts,
+              needsAttention: true,
+              feedback,
+              dispatchState: null,
+            });
+
+            const approval = this.db.createApproval({
+              runId: run.id,
+              companyId: company.id,
+              agentId: ceoAgent.id,
+              actionType: 'task_review_limit',
+              description: `Task "${task.title}" rejected ${newAttempts} times (exceeded max retries of ${maxReviewRetries}). Human decision needed.`,
+              details: {
+                taskId: task.id,
+                taskTitle: task.title,
+                reviewAttempts: newAttempts,
+                feedback,
+              },
+            });
+
+            this.emit({
+              runId: run.id,
+              companyId: company.id,
+              type: 'approval_needed',
+              timestamp: new Date().toISOString(),
+              data: { approval },
+            });
+
             this.emit({
               runId: run.id,
               companyId: company.id,
               type: 'task_status_change',
               timestamp: new Date().toISOString(),
-              data: { taskId: task.id, taskTitle: task.title, status: 'failed' },
+              data: {
+                taskId: task.id,
+                taskTitle: task.title,
+                status: task.status,
+                needsAttention: true,
+              },
             });
-            return { success: false, taskId: task.id, status: 'failed', message: `Max retries (${DEFAULT_LIMITS.MAX_RETRIES_PER_TASK}) exceeded.` };
+
+            return {
+              success: false,
+              taskId: task.id,
+              status: 'needs_attention',
+              message: `Max review retries (${maxReviewRetries}) exceeded. Flagged as needs_attention for user decision in Approvals Inbox.`,
+            };
           }
 
-          this.db.updateTask(task.id, { status: 'in_progress', feedback, retryCount: newRetry });
-          this.emit({
-            runId: run.id,
-            companyId: company.id,
-            type: 'task_status_change',
-            timestamp: new Date().toISOString(),
-            data: { taskId: task.id, taskTitle: task.title, status: 'in_progress' },
+          // Under retry limit: increment reviewAttempts, save feedback, and re-dispatch worker
+          this.db.updateTask(task.id, {
+            reviewAttempts: newAttempts,
+            feedback,
           });
 
-          // Re-dispatch worker with feedback
-          const worker = task.assignedTo ? this.db.listAgents(company.id).find(a => a.id === task.assignedTo) : null;
-          if (worker) {
-            await this.executeWorkerTask(company, run, worker, task, abortSignal, feedback);
-          }
+          await this.dispatchInProgressTask(task.id, feedback);
 
-          return { success: true, taskId: task.id, status: 'retrying_with_feedback', retryCount: newRetry };
+          return {
+            success: true,
+            taskId: task.id,
+            status: 'retrying_with_feedback',
+            reviewAttempts: newAttempts,
+          };
         }
       }
 
@@ -916,7 +1093,7 @@ CRITICAL: Do NOT just describe or discuss the plan in text. Invoke the tools (se
     abortSignal: AbortSignal,
     feedback?: string
   ): Promise<void> {
-    const agentLoop = new AgentLoop(this.db, this.workspace, this.registry);
+    const agentLoop = new AgentLoop(this.db, this.workspace, this.registry, this.budgetGuard);
 
     const executeWorkerTool = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
       if (name === 'read_file') {
@@ -961,6 +1138,7 @@ CRITICAL: Do NOT just describe or discuss the plan in text. Invoke the tools (se
 
         this.db.updateTask(task.id, {
           status: 'in_review',
+          dispatchState: null,
           result: JSON.stringify({ summary, deliverablePath, deliverableContent }),
         });
 
@@ -1013,6 +1191,7 @@ Description: "${task.description}"`;
       if (currentTask && currentTask.status === 'in_progress' && !workerAbortController.signal.aborted) {
         this.db.updateTask(task.id, {
           status: 'in_review',
+          dispatchState: null,
           result: JSON.stringify({ summary: `Worker ${worker.role} finished task execution.` }),
         });
         this.emit({

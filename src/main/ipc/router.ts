@@ -45,10 +45,14 @@ export function registerIpcHandlers(
       autoDetectOllama: true,
       workspaceDir: workspace.getBaseDir(),
       onboardingCompleted: false,
+      maxConcurrentWorkers: 3,
     };
     const saved = db.getSetting<AppSettings>('settings', defaultSettings);
     if (!saved.workspaceDir) {
       saved.workspaceDir = workspace.getBaseDir();
+    }
+    if (saved.maxConcurrentWorkers === undefined) {
+      saved.maxConcurrentWorkers = 3;
     }
     return saved;
   });
@@ -68,10 +72,15 @@ export function registerIpcHandlers(
       theme: 'dark',
       autoDetectOllama: true,
       workspaceDir: workspace.getBaseDir(),
+      maxConcurrentWorkers: 3,
     });
 
     if (updates.workspaceDir) {
       workspace.setBaseDir(updates.workspaceDir);
+    }
+
+    if (updates.maxConcurrentWorkers !== undefined) {
+      orchestrator.setMaxConcurrentWorkers(updates.maxConcurrentWorkers);
     }
 
     const merged = { ...current, ...updates };
@@ -255,17 +264,28 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(API_CHANNEL.UPDATE_TASK, async (_e, taskId: string, data: any) => {
-    const updated = db.updateTask(taskId, data);
-    if (updated) {
-      if (data.status === 'in_progress' && updated.assignedTo) {
+    if (data.status === 'in_progress') {
+      const existing = db.getTask(taskId);
+      const { status, ...otherUpdates } = data;
+      if (Object.keys(otherUpdates).length > 0) {
+        db.updateTask(taskId, otherUpdates);
+      }
+      const updated = db.getTask(taskId);
+      if (updated?.assignedTo) {
         orchestrator.dispatchInProgressTask(taskId).catch(err => {
           console.error('Failed to dispatch in-progress task:', err);
         });
-      } else if (data.status && data.status !== 'in_progress') {
+      } else if (existing && existing.status !== 'in_progress') {
+        db.claimTask(taskId);
+      }
+      return db.getTask(taskId);
+    } else {
+      if (data.status && data.status !== 'in_progress') {
         orchestrator.cancelTaskWorker(taskId);
       }
+      const updated = db.updateTask(taskId, data);
+      return updated;
     }
-    return updated;
   });
 
   ipcMain.handle(API_CHANNEL.DELETE_TASK, async (_e, taskId: string) => {
