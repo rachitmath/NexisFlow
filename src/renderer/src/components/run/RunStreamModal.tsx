@@ -42,26 +42,85 @@ export const RunStreamModal: React.FC<RunStreamModalProps> = ({
   onOpenFullLogs,
 }) => {
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
+  const [dbEvents, setDbEvents] = useState<RunEvent[]>([]);
   const terminalRef = useRef<HTMLDivElement>(null);
+
+  // If live events are empty, load historical messages from database for this run
+  useEffect(() => {
+    const api = (window as any).nexisFlowAPI;
+    if (isOpen && run?.id && api?.listMessages) {
+      api.listMessages(run.companyId, run.id)
+        .then((msgs: any[]) => {
+          if (!Array.isArray(msgs)) return;
+          const converted: RunEvent[] = [];
+          msgs.forEach(m => {
+            if (m.content && m.content.trim()) {
+              converted.push({
+                runId: m.runId,
+                companyId: m.companyId,
+                type: 'agent_message',
+                timestamp: m.timestamp,
+                data: {
+                  agentId: m.agentId,
+                  agentRole: m.role === 'assistant' ? 'CEO' : m.role,
+                  content: m.content,
+                }
+              });
+            }
+            if (m.toolCalls) {
+              try {
+                const calls = typeof m.toolCalls === 'string' ? JSON.parse(m.toolCalls) : m.toolCalls;
+                if (Array.isArray(calls)) {
+                  calls.forEach(c => {
+                    converted.push({
+                      runId: m.runId,
+                      companyId: m.companyId,
+                      type: 'tool_call',
+                      timestamp: m.timestamp,
+                      data: {
+                        agentId: m.agentId,
+                        agentRole: m.role === 'assistant' ? 'CEO' : m.role,
+                        toolName: c.name,
+                        toolArgs: c.args,
+                      }
+                    });
+                  });
+                }
+              } catch {
+                // Ignore parse errors
+              }
+            }
+          });
+          setDbEvents(converted);
+        })
+        .catch(console.error);
+    }
+  }, [isOpen, run?.id, run?.companyId]);
+
+  // Combine live stream events and database fallback events
+  const combinedEvents = useMemo(() => {
+    if (events.length > 0) return events;
+    return dbEvents;
+  }, [events, dbEvents]);
 
   // Extract all distinct agent roles seen in this run
   const agentRoles = useMemo(() => {
     const set = new Set<string>();
-    events.forEach(e => {
+    combinedEvents.forEach(e => {
       const r = (e.data as any)?.agentRole;
       if (r) set.add(r);
     });
     return Array.from(set);
-  }, [events]);
+  }, [combinedEvents]);
 
   const filteredEvents = useMemo(() => {
-    if (!selectedRole) return events;
-    return events.filter(e => {
+    if (!selectedRole) return combinedEvents;
+    return combinedEvents.filter(e => {
       const r = (e.data as any)?.agentRole;
       if (!r) return true;
       return r.toLowerCase() === selectedRole.toLowerCase();
     });
-  }, [events, selectedRole]);
+  }, [combinedEvents, selectedRole]);
 
   useEffect(() => {
     if (terminalRef.current) {
@@ -179,11 +238,11 @@ export const RunStreamModal: React.FC<RunStreamModalProps> = ({
                   : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
               }`}
             >
-              All Agents ({events.length})
+              All Agents ({combinedEvents.length})
             </button>
 
             {agentRoles.map(role => {
-              const count = events.filter(e => ((e.data as any)?.agentRole || '').toLowerCase() === role.toLowerCase()).length;
+              const count = combinedEvents.filter(e => ((e.data as any)?.agentRole || '').toLowerCase() === role.toLowerCase()).length;
               const isCeo = role.toLowerCase() === 'ceo';
               return (
                 <button
@@ -210,6 +269,22 @@ export const RunStreamModal: React.FC<RunStreamModalProps> = ({
           </div>
         </div>
 
+        {/* Status Notification Banner if Run is Not Active */}
+        {!isRunning && !isPaused && (
+          <div className="px-5 py-2.5 bg-slate-800/90 border-b border-slate-700/80 flex items-center justify-between text-xs text-slate-300">
+            <span className="flex items-center gap-2">
+              <CheckCircle2 className={`w-4 h-4 ${run.status === 'completed' ? 'text-emerald-400' : 'text-slate-400'}`} />
+              <span>This execution session is <strong>{run.status.toUpperCase()}</strong>. You can view its log stream here or open full historical logs.</span>
+            </span>
+            <button
+              onClick={onClose}
+              className="px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-white font-medium cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* Approval Alert Bar */}
         {pendingApproval && (
           <div className="p-3 bg-amber-950/60 border-b border-amber-800/60 flex items-center justify-between px-5">
@@ -222,13 +297,13 @@ export const RunStreamModal: React.FC<RunStreamModalProps> = ({
             <div className="flex items-center space-x-2">
               <button
                 onClick={() => onResolveApproval && onResolveApproval(pendingApproval.id, 'denied')}
-                className="px-2.5 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 text-rose-300"
+                className="px-2.5 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 text-rose-300 cursor-pointer"
               >
                 Deny
               </button>
               <button
                 onClick={() => onResolveApproval && onResolveApproval(pendingApproval.id, 'approved')}
-                className="px-3 py-1 text-xs font-bold rounded bg-emerald-600 hover:bg-emerald-500 text-white"
+                className="px-3 py-1 text-xs font-bold rounded bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer"
               >
                 Approve
               </button>
@@ -244,7 +319,7 @@ export const RunStreamModal: React.FC<RunStreamModalProps> = ({
           {filteredEvents.length === 0 ? (
             <div className="flex items-center space-x-2 text-slate-500">
               <Terminal className="w-4 h-4 animate-pulse" />
-              <span>{events.length === 0 ? 'Awaiting agent initialization...' : `No events recorded yet for agent: ${selectedRole}`}</span>
+              <span>{combinedEvents.length === 0 ? 'Awaiting agent initialization...' : `No events recorded yet for agent: ${selectedRole}`}</span>
             </div>
           ) : (
             filteredEvents.map((evt, idx) => {

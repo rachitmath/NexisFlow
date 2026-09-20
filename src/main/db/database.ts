@@ -628,6 +628,12 @@ Operational Rules:
     this.db.prepare(`UPDATE runs SET ${fields.join(', ')} WHERE id = ?`).run(...values);
   }
 
+  public reconcileStaleRuns(): number {
+    const now = new Date().toISOString();
+    const res = this.db.prepare("UPDATE runs SET status = 'cancelled', finished_at = ? WHERE status IN ('running', 'paused')").run(now);
+    return res.changes;
+  }
+
   public listRuns(companyId: string): Run[] {
     const rows = this.db.prepare('SELECT * FROM runs WHERE company_id = ? ORDER BY started_at DESC').all(companyId) as any[];
     return rows.map(r => ({

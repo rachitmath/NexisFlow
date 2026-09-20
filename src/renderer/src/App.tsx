@@ -138,9 +138,7 @@ export const App: React.FC = () => {
 
       // Check if there is an active running run
       const running = detail.recentRuns.find(r => r.status === 'running' || r.status === 'paused');
-      if (running) {
-        setActiveRun(running);
-      }
+      setActiveRun(running || null);
     } catch (err) {
       console.error('Failed to load company detail:', err);
     }
@@ -239,8 +237,14 @@ export const App: React.FC = () => {
 
   const handleStopRun = async () => {
     if (!api || !activeRun) return;
-    await api.stopRun(activeRun.id);
-    if (selectedCompany) await loadCompanyDetail(selectedCompany.id);
+    try {
+      await api.stopRun(activeRun.id);
+      setActiveRun(null);
+      setIsRunModalOpen(false);
+      if (selectedCompany) await loadCompanyDetail(selectedCompany.id);
+    } catch (err) {
+      console.error('Failed to stop run:', err);
+    }
   };
 
   const handlePauseRun = async () => {

@@ -37,6 +37,14 @@ export class CompanyOrchestrator {
     this.workspace = workspace;
     this.registry = registry;
     this.budgetGuard = budgetGuard;
+    try {
+      const reconciled = this.db.reconcileStaleRuns();
+      if (reconciled > 0) {
+        console.log(`[Orchestrator] Reconciled ${reconciled} orphaned run(s) from previous session.`);
+      }
+    } catch (err) {
+      console.warn('[Orchestrator] Could not reconcile stale runs:', err);
+    }
   }
 
   public subscribe(listener: (event: RunEvent) => void): () => void {
@@ -56,25 +64,28 @@ export class CompanyOrchestrator {
     }
   }
 
+  public isRunActive(runId: string): boolean {
+    return this.activeRuns.has(runId);
+  }
+
   public stopRun(runId: string): boolean {
     const active = this.activeRuns.get(runId);
     if (active) {
       active.abortController.abort();
       this.activeRuns.delete(runId);
-      this.db.updateRun(runId, { status: 'cancelled', finishedAt: new Date().toISOString() });
-      const run = this.db.getRun(runId);
-      if (run) {
-        this.emit({
-          runId,
-          companyId: run.companyId,
-          type: 'run_status_change',
-          timestamp: new Date().toISOString(),
-          data: { status: 'cancelled' },
-        });
-      }
-      return true;
     }
-    return false;
+    this.db.updateRun(runId, { status: 'cancelled', finishedAt: new Date().toISOString() });
+    const run = this.db.getRun(runId);
+    if (run) {
+      this.emit({
+        runId,
+        companyId: run.companyId,
+        type: 'run_status_change',
+        timestamp: new Date().toISOString(),
+        data: { status: 'cancelled' },
+      });
+    }
+    return true;
   }
 
   public pauseRun(runId: string): boolean {
