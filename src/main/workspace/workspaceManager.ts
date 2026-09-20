@@ -136,4 +136,31 @@ export class WorkspaceManager {
     scan(delivDir);
     return results;
   }
+
+  public deleteCompanyDir(companyId: string): void {
+    const dir = path.join(this.baseDir, companyId);
+    if (fs.existsSync(dir)) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        console.error(`Failed to delete company workspace directory for ${companyId}:`, err);
+      }
+    }
+  }
+
+  public cleanCompanyDir(companyId: string): void {
+    const notesDir = path.join(this.baseDir, companyId, 'notes');
+    const delivDir = path.join(this.baseDir, companyId, 'deliverables');
+    
+    [notesDir, delivDir].forEach(dir => {
+      if (fs.existsSync(dir)) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+          fs.mkdirSync(dir, { recursive: true });
+        } catch (err) {
+          console.error(`Failed to clean company directory ${dir}:`, err);
+        }
+      }
+    });
+  }
 }

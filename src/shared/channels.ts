@@ -18,6 +18,7 @@ export const API_CHANNEL = {
   CREATE_COMPANY: 'company:create',
   UPDATE_COMPANY: 'company:update',
   DELETE_COMPANY: 'company:delete',
+  RESTART_COMPANY: 'company:restart',
 
   // Agents & Tasks
   LIST_AGENTS: 'agents:list',

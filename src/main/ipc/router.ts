@@ -200,7 +200,21 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(API_CHANNEL.DELETE_COMPANY, async (_e, id: string) => {
-    return db.deleteCompany(id);
+    orchestrator.cancelAllWorkersForCompany(id);
+    const deleted = db.deleteCompany(id);
+    if (deleted) {
+      workspace.deleteCompanyDir(id);
+    }
+    return deleted;
+  });
+
+  ipcMain.handle(API_CHANNEL.RESTART_COMPANY, async (_e, id: string) => {
+    orchestrator.cancelAllWorkersForCompany(id);
+    const restarted = db.restartCompany(id);
+    if (restarted) {
+      workspace.cleanCompanyDir(id);
+    }
+    return restarted;
   });
 
   // --- Agents & Tasks ---
@@ -217,20 +231,41 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(API_CHANNEL.CREATE_TASK, async (_e, companyId: string, data: any) => {
-    return db.createTask({
+    const created = db.createTask({
       companyId,
       title: data.title,
       description: data.description,
       dependencies: data.dependencies,
       assignedTo: data.assignedTo,
     });
+    if (created && data.status) {
+      db.updateTask(created.id, { status: data.status });
+      created.status = data.status;
+    }
+    if (created && created.status === 'in_progress' && created.assignedTo) {
+      orchestrator.dispatchInProgressTask(created.id).catch(err => {
+        console.error('Failed to dispatch newly created in-progress task:', err);
+      });
+    }
+    return created;
   });
 
   ipcMain.handle(API_CHANNEL.UPDATE_TASK, async (_e, taskId: string, data: any) => {
-    return db.updateTask(taskId, data);
+    const updated = db.updateTask(taskId, data);
+    if (updated) {
+      if (data.status === 'in_progress' && updated.assignedTo) {
+        orchestrator.dispatchInProgressTask(taskId).catch(err => {
+          console.error('Failed to dispatch in-progress task:', err);
+        });
+      } else if (data.status && data.status !== 'in_progress') {
+        orchestrator.cancelTaskWorker(taskId);
+      }
+    }
+    return updated;
   });
 
   ipcMain.handle(API_CHANNEL.DELETE_TASK, async (_e, taskId: string) => {
+    orchestrator.cancelTaskWorker(taskId);
     return db.deleteTask(taskId);
   });
 

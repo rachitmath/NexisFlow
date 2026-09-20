@@ -184,11 +184,19 @@ export class AgentLoop {
           consecutiveNoToolCalls++;
 
           // Autonomous agents (especially the CEO) frequently formulate a plan in text first.
-          // Nudge them up to 2 times to actually invoke their tools instead of shutting down the entire run.
-          if (consecutiveNoToolCalls <= 2) {
-            const nudge = agent.role === 'CEO'
-              ? 'Great plan. Now execute it immediately by calling the appropriate tools: call setup_department to establish the departments, hire_agent to hire roles, create_task to create tasks, and assign_task to start worker execution. Do not just speak in text. If all goals and deliverables are completely finished, call finish(summary).'
-              : 'Please proceed with your task by invoking your tools (e.g. read_file, write_file, report_result). Do not merely discuss it in text.';
+          // Nudge them up to 3 times to actually invoke their tools instead of shutting down the entire run.
+          if (consecutiveNoToolCalls <= 3) {
+            let nudge: string;
+            if (agent.role === 'CEO') {
+              const currentTasks = this.db.listTasks(companyId);
+              if (currentTasks.length === 0) {
+                nudge = 'You have established departments and hired specialists, but NO tasks have been created or assigned yet. You MUST now invoke create_task with detailed requirements and deliverables, and assign_task to put your specialists to work. Do not output text without calling tools.';
+              } else {
+                nudge = 'Great progress. Now continue execution by invoking the appropriate tools: create_task to add required deliverables, assign_task to start worker execution, and review_result to evaluate work. If all company goals and deliverables are completely finished, call finish(summary).';
+              }
+            } else {
+              nudge = 'Please proceed with your task by invoking your tools (e.g. read_file, write_file, report_result). Do not merely discuss it in text.';
+            }
 
             messages.push({
               role: 'user',

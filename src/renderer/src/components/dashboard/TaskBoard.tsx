@@ -13,14 +13,17 @@ import {
   Trash2,
   FileText,
   Copy,
-  Check
+  Check,
+  PlayCircle,
+  ArrowRight
 } from 'lucide-react';
 import { Task, TaskStatus, Agent } from '@shared/types';
 
 interface TaskBoardProps {
   tasks: Task[];
   agents: Agent[];
-  onCreateTask: (title: string, description: string, assignedTo?: string) => Promise<void>;
+  onCreateTask: (title: string, description: string, assignedTo?: string, status?: TaskStatus) => Promise<void>;
+  onUpdateTask?: (taskId: string, updates: Partial<Task>) => Promise<void>;
   onDeleteTask?: (taskId: string) => Promise<void>;
 }
 
@@ -28,6 +31,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   tasks = [],
   agents = [],
   onCreateTask,
+  onUpdateTask,
   onDeleteTask,
 }) => {
   const safeTasks = Array.isArray(tasks) ? tasks : [];
@@ -36,10 +40,18 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [copiedResult, setCopiedResult] = useState(false);
+  
+  // Create task modal state
   const [newTitle, setNewTitle] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newAssignedTo, setNewAssignedTo] = useState('');
+  const [newStatus, setNewStatus] = useState<TaskStatus>('todo');
   const [submitting, setSubmitting] = useState(false);
+
+  // Edit task modal state
+  const [editStatus, setEditStatus] = useState<TaskStatus>('todo');
+  const [editAssignedTo, setEditAssignedTo] = useState('');
+  const [isUpdatingTask, setIsUpdatingTask] = useState(false);
 
   const columns: { status: TaskStatus; label: string; color: string; icon: React.ReactNode }[] = [
     { status: 'todo', label: 'Todo & Backlog', color: 'border-slate-700 text-slate-300', icon: <Clock className="w-3.5 h-3.5" /> },
@@ -54,10 +66,11 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
     if (!newTitle.trim()) return;
     setSubmitting(true);
     try {
-      await onCreateTask(newTitle.trim(), newDescription.trim(), newAssignedTo || undefined);
+      await onCreateTask(newTitle.trim(), newDescription.trim(), newAssignedTo || undefined, newStatus);
       setNewTitle('');
       setNewDescription('');
       setNewAssignedTo('');
+      setNewStatus('todo');
       setShowCreateModal(false);
     } catch (err) {
       console.error(err);
@@ -66,10 +79,45 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
     }
   };
 
+  const handleOpenTaskModal = (task: Task) => {
+    setSelectedTask(task);
+    setEditStatus(task.status);
+    setEditAssignedTo(task.assignedTo || '');
+  };
+
+  const handleQuickStatusChange = async (task: Task, newStatusVal: TaskStatus) => {
+    if (!onUpdateTask || task.status === newStatusVal) return;
+    try {
+      await onUpdateTask(task.id, { status: newStatusVal });
+    } catch (err) {
+      console.error('Failed to change task status:', err);
+    }
+  };
+
+  const handleSaveTaskChanges = async () => {
+    if (!selectedTask || !onUpdateTask) return;
+    setIsUpdatingTask(true);
+    try {
+      await onUpdateTask(selectedTask.id, {
+        status: editStatus,
+        assignedTo: editAssignedTo || null,
+      });
+      setSelectedTask({
+        ...selectedTask,
+        status: editStatus,
+        assignedTo: editAssignedTo || null,
+      });
+    } catch (err) {
+      console.error('Failed to update task:', err);
+    } finally {
+      setIsUpdatingTask(false);
+    }
+  };
+
   const getAgentName = (agentId: string | null) => {
     if (!agentId) return 'Unassigned';
     const found = safeAgents.find(a => a.id === agentId);
-    return found ? found.role : 'Specialist';
+    return found ? `${found.role}` : 'Specialist';
   };
 
   return (
@@ -114,7 +162,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                 {colTasks.map(task => (
                   <div
                     key={task.id}
-                    onClick={() => setSelectedTask(task)}
+                    onClick={() => handleOpenTaskModal(task)}
                     className="p-3 rounded-lg bg-slate-900 border border-slate-800 hover:border-indigo-500/50 hover:bg-slate-850 cursor-pointer transition-all space-y-2 group shadow-sm relative"
                   >
                     <div className="flex items-start justify-between gap-1.5">
@@ -135,6 +183,17 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                       </p>
                     )}
 
+                    {/* In-progress active badge */}
+                    {task.status === 'in_progress' && (
+                      <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-indigo-500/10 border border-indigo-500/25 text-[10px] text-indigo-300 font-medium">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                        </span>
+                        <span>Agent active on task...</span>
+                      </div>
+                    )}
+
                     {/* Feedback Alert if rejected by CEO */}
                     {task.feedback && (
                       <div className="p-2 rounded bg-amber-950/30 border border-amber-800/30 text-[10px] text-amber-200/90 flex items-start gap-1">
@@ -143,14 +202,58 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                       </div>
                     )}
 
-                    <div className="pt-1.5 border-t border-slate-800/70 flex items-center justify-between text-[10px] text-slate-500">
-                      <span className="flex items-center gap-1 truncate max-w-[120px]">
-                        <User className="w-3 h-3 text-slate-400" />
+                    {/* Quick Move / Bottom Info */}
+                    <div className="pt-2 border-t border-slate-800/70 flex items-center justify-between text-[10px] text-slate-500">
+                      <span className="flex items-center gap-1 truncate max-w-[110px]" title={getAgentName(task.assignedTo)}>
+                        <User className="w-3 h-3 text-slate-400 shrink-0" />
                         <span className="text-slate-300 truncate">{getAgentName(task.assignedTo)}</span>
                       </span>
-                      <span className="font-mono text-[9px] text-slate-600">
-                        {task.id.substring(0, 8)}
-                      </span>
+
+                      {/* Quick Move Controls */}
+                      <div className="flex items-center space-x-1" onClick={(e) => e.stopPropagation()}>
+                        {task.status === 'todo' && (
+                          <button
+                            onClick={() => handleQuickStatusChange(task, 'in_progress')}
+                            className="px-2 py-0.5 rounded bg-indigo-600/80 hover:bg-indigo-500 text-white text-[10px] font-semibold flex items-center space-x-1 transition-colors cursor-pointer"
+                            title="Start task (Agent will immediately pick it up)"
+                          >
+                            <PlayCircle className="w-3 h-3" />
+                            <span>Start</span>
+                          </button>
+                        )}
+                        {task.status === 'in_progress' && (
+                          <button
+                            onClick={() => handleQuickStatusChange(task, 'in_review')}
+                            className="px-2 py-0.5 rounded bg-amber-600/80 hover:bg-amber-500 text-white text-[10px] font-semibold flex items-center space-x-1 transition-colors cursor-pointer"
+                            title="Submit for CEO review"
+                          >
+                            <span>Review</span>
+                            <ArrowRight className="w-2.5 h-2.5" />
+                          </button>
+                        )}
+                        {task.status === 'in_review' && (
+                          <button
+                            onClick={() => handleQuickStatusChange(task, 'completed')}
+                            className="px-2 py-0.5 rounded bg-emerald-600/80 hover:bg-emerald-500 text-white text-[10px] font-semibold flex items-center space-x-1 transition-colors cursor-pointer"
+                            title="Accept and complete"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>Accept</span>
+                          </button>
+                        )}
+                        {/* Status Select for full control */}
+                        <select
+                          value={task.status}
+                          onChange={(e) => handleQuickStatusChange(task, e.target.value as TaskStatus)}
+                          className="bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-300 rounded px-1.5 py-0.5 text-[9px] focus:outline-none focus:border-indigo-500 cursor-pointer"
+                        >
+                          <option value="todo">Todo</option>
+                          <option value="in_progress">In Progress</option>
+                          <option value="in_review">In Review</option>
+                          <option value="completed">Completed</option>
+                          <option value="failed">Failed</option>
+                        </select>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -170,7 +273,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
       {showCreateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
           <div className="bg-dark-850 border border-slate-700 rounded-xl p-5 w-full max-w-md shadow-2xl space-y-4">
-            <h4 className="text-sm font-semibold text-white">Create Quick Task</h4>
+            <h4 className="text-sm font-semibold text-white">Create Task</h4>
             <form onSubmit={handleCreate} className="space-y-3">
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1">Task Title</label>
@@ -188,41 +291,57 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
                 <label className="block text-xs font-medium text-slate-300 mb-1">Description & Requirements</label>
                 <textarea
                   rows={3}
-                  placeholder="Provide details or expected output format"
+                  placeholder="Provide clear requirements and deliverable expectations..."
                   value={newDescription}
                   onChange={(e) => setNewDescription(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 resize-none"
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1">Assign Agent (Optional)</label>
-                <select
-                  value={newAssignedTo}
-                  onChange={(e) => setNewAssignedTo(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                >
-                  <option value="">Leave Unassigned (CEO will assign)</option>
-                  {safeAgents.map(a => (
-                    <option key={a.id} value={a.id}>
-                      {a.role}
-                    </option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">Assign Agent</label>
+                  <select
+                    value={newAssignedTo}
+                    onChange={(e) => setNewAssignedTo(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="">Leave Unassigned</option>
+                    {safeAgents.map(a => (
+                      <option key={a.id} value={a.id}>
+                        {a.role}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1">Initial Status</label>
+                  <select
+                    value={newStatus}
+                    onChange={(e) => setNewStatus(e.target.value as TaskStatus)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="todo">Todo & Backlog</option>
+                    <option value="in_progress">In Progress (Execute Immediately)</option>
+                    <option value="in_review">CEO In-Review</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </div>
               </div>
 
               <div className="flex justify-end space-x-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}
-                  className="px-3 py-1.5 rounded-lg bg-slate-800 text-xs font-medium text-slate-300 hover:bg-slate-700"
+                  className="px-3 py-1.5 rounded-lg bg-slate-800 text-xs font-medium text-slate-300 hover:bg-slate-700 cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={submitting || !newTitle.trim()}
-                  className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-xs font-semibold text-white"
+                  className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-xs font-semibold text-white cursor-pointer"
                 >
                   {submitting ? 'Creating...' : 'Create Task'}
                 </button>
@@ -238,7 +357,7 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
           <div className="bg-dark-850 border border-slate-700 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
             {/* Header */}
             <div className="p-5 border-b border-slate-800 flex items-start justify-between bg-dark-900/60">
-              <div className="space-y-1.5 pr-4">
+              <div className="space-y-1.5 pr-4 flex-1">
                 <div className="flex items-center space-x-2">
                   <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
                     selectedTask.status === 'completed' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
@@ -270,15 +389,62 @@ export const TaskBoard: React.FC<TaskBoardProps> = ({
 
             {/* Scrollable Content */}
             <div className="p-5 overflow-y-auto space-y-5 text-xs text-slate-300 flex-1">
-              {/* Assignee Information */}
-              <div className="flex items-center space-x-4 p-3 rounded-xl bg-slate-900 border border-slate-800">
-                <div className="w-9 h-9 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-                  <User className="w-4 h-4" />
+              {/* Status and Assignee Controls */}
+              <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  Task Management & Assignment
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-medium text-slate-400 mb-1">Status</label>
+                    <select
+                      value={editStatus}
+                      onChange={(e) => setEditStatus(e.target.value as TaskStatus)}
+                      className="w-full bg-slate-850 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
+                    >
+                      <option value="todo">Todo & Backlog</option>
+                      <option value="in_progress">In Progress (Auto-Executes)</option>
+                      <option value="in_review">CEO In-Review</option>
+                      <option value="completed">Completed</option>
+                      <option value="failed">Failed</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-medium text-slate-400 mb-1">Assigned Agent</label>
+                    <select
+                      value={editAssignedTo}
+                      onChange={(e) => setEditAssignedTo(e.target.value)}
+                      className="w-full bg-slate-850 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
+                    >
+                      <option value="">Unassigned</option>
+                      {safeAgents.map(a => (
+                        <option key={a.id} value={a.id}>
+                          {a.role}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-semibold">Assigned Agent</span>
-                  <span className="text-sm font-semibold text-white">{getAgentName(selectedTask.assignedTo)}</span>
-                </div>
+
+                {(editStatus !== selectedTask.status || editAssignedTo !== (selectedTask.assignedTo || '')) && (
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      disabled={isUpdatingTask}
+                      onClick={handleSaveTaskChanges}
+                      className="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-colors cursor-pointer"
+                    >
+                      {isUpdatingTask ? 'Updating...' : 'Apply Status / Assignee Changes'}
+                    </button>
+                  </div>
+                )}
+
+                {editStatus === 'in_progress' && (
+                  <p className="text-[10px] text-indigo-400 bg-indigo-950/30 p-2 rounded border border-indigo-800/30">
+                    &bull; Setting status to <strong>In Progress</strong> immediately instructs the assigned agent to execute tools and generate deliverables.
+                  </p>
+                )}
               </div>
 
               {/* Detailed Description */}

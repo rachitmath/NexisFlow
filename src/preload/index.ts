@@ -42,6 +42,7 @@ export const nexisFlowAPI = {
   createCompany: (data: CreateCompanyDTO): Promise<Company> => ipcRenderer.invoke(API_CHANNEL.CREATE_COMPANY, data),
   updateCompany: (id: string, data: Partial<Company>): Promise<Company> => ipcRenderer.invoke(API_CHANNEL.UPDATE_COMPANY, id, data),
   deleteCompany: (id: string): Promise<boolean> => ipcRenderer.invoke(API_CHANNEL.DELETE_COMPANY, id),
+  restartCompany: (id: string): Promise<Company | null> => ipcRenderer.invoke(API_CHANNEL.RESTART_COMPANY, id),
 
   // Agents & Tasks
   listAgents: (companyId: string): Promise<Agent[]> => ipcRenderer.invoke(API_CHANNEL.LIST_AGENTS, companyId),

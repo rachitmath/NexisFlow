@@ -24,6 +24,7 @@ export class CompanyOrchestrator {
   private registry: ProviderRegistry;
   private budgetGuard: BudgetGuard;
   private activeRuns: Map<string, { abortController: AbortController; paused: boolean }> = new Map();
+  private activeTaskWorkers: Map<string, { abortController: AbortController }> = new Map();
   private eventListeners: Set<(event: RunEvent) => void> = new Set();
   private pendingApprovalResolvers: Map<string, (decision: 'approved' | 'denied') => void> = new Map();
 
@@ -146,6 +147,97 @@ export class CompanyOrchestrator {
     });
   }
 
+  public cancelTaskWorker(taskId: string): void {
+    const active = this.activeTaskWorkers.get(taskId);
+    if (active) {
+      active.abortController.abort();
+      this.activeTaskWorkers.delete(taskId);
+    }
+  }
+
+  public cancelAllWorkersForCompany(companyId: string): void {
+    for (const [runId, active] of this.activeRuns.entries()) {
+      const run = this.db.getRun(runId);
+      if (run && run.companyId === companyId) {
+        active.abortController.abort();
+        this.activeRuns.delete(runId);
+      }
+    }
+    for (const [taskId, active] of this.activeTaskWorkers.entries()) {
+      const task = this.db.getTask(taskId);
+      if (task && task.companyId === companyId) {
+        active.abortController.abort();
+        this.activeTaskWorkers.delete(taskId);
+      }
+    }
+  }
+
+  public async dispatchInProgressTask(taskId: string): Promise<void> {
+    const task = this.db.getTask(taskId);
+    if (!task || task.status !== 'in_progress' || !task.assignedTo) {
+      return;
+    }
+
+    if (this.activeTaskWorkers.has(taskId)) {
+      return;
+    }
+
+    const company = this.db.getCompany(task.companyId);
+    if (!company) return;
+
+    const worker = this.db.getAgent(task.assignedTo) || this.db.findAgentByIdOrRole(company.id, task.assignedTo);
+    if (!worker) return;
+
+    const runs = this.db.listRuns(company.id);
+    let run = runs.find(r => r.status === 'running');
+    let createdRun = false;
+    if (!run) {
+      run = this.db.createRun(company.id);
+      createdRun = true;
+      this.emit({
+        runId: run.id,
+        companyId: company.id,
+        type: 'run_status_change',
+        timestamp: new Date().toISOString(),
+        data: { status: 'running' },
+      });
+    }
+
+    const abortController = new AbortController();
+    this.activeTaskWorkers.set(taskId, { abortController });
+
+    (async () => {
+      try {
+        await this.executeWorkerTask(company, run!, worker, task, abortController.signal);
+      } catch (err: any) {
+        if (!abortController.signal.aborted) {
+          console.error(`Task worker error for task ${taskId}:`, err);
+        }
+      } finally {
+        this.activeTaskWorkers.delete(taskId);
+        if (createdRun && run) {
+          this.db.updateRun(run.id, { status: 'completed', finishedAt: new Date().toISOString() });
+          this.emit({
+            runId: run.id,
+            companyId: company.id,
+            type: 'run_status_change',
+            timestamp: new Date().toISOString(),
+            data: { status: 'completed' },
+          });
+        }
+      }
+    })();
+  }
+
+  public async checkAndDispatchAssignedTasks(companyId: string): Promise<void> {
+    const tasks = this.db.listTasks(companyId);
+    for (const task of tasks) {
+      if (task.status === 'in_progress' && task.assignedTo && !this.activeTaskWorkers.has(task.id)) {
+        await this.dispatchInProgressTask(task.id);
+      }
+    }
+  }
+
   public async startRun(companyId: string, options?: RunOptions): Promise<Run> {
     const company = this.db.getCompany(companyId);
     if (!company) {
@@ -167,11 +259,11 @@ Operational Rules:
 2. Do NOT default to software engineering unless the goal specifically requires coding. If the user already has an app and needs sales/leads, focus on Marketing and Sales departments!
 3. Establish 1 to 3 relevant Departments using setup_department (e.g. "Marketing & Growth", "Sales & Outreach", "Product & Engineering", etc.) and designate a department head role for each.
 4. Hire specialized workers (Specialists or Team Leads) under their respective departments using hire_agent.
-5. Decompose the goal into concrete, actionable tasks using create_task with a detailed, high-quality description (detailing what the worker must research, build, or write, required deliverable file format, and acceptance criteria).
-6. Assign tasks to appropriate agents using assign_task. Workers will execute their tools and report deliverables.
-7. Review worker results carefully: call review_result(accept) if good, or review_result(reject, feedback) if improvements are needed.
+5. Create multiple concrete, actionable tasks (at least 2-4 tasks) using create_task with rich, descriptive requirements and expected deliverables.
+6. Assign these tasks to the hired specialist agents using assign_task. Workers will automatically execute their tasks and produce deliverables.
+7. Continuously monitor progress using check_status and review worker deliverables with review_result.
 8. CRITICAL: Do NOT merely describe what you plan to do in text. You MUST execute your plan immediately by invoking the tools (setup_department, hire_agent, create_task, assign_task).
-9. When all required objectives and deliverables are achieved, call finish(summary).`;
+9. Only when all required objectives and deliverables are achieved, call finish(summary).`;
 
     const allCeoTools = Object.keys(getCeoTools());
     let ceoAgent = this.db.findAgentByRole(companyId, 'CEO');
@@ -765,9 +857,9 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
       initialMessage: `You are now active as CEO of ${company.name}. Goal: "${company.goal}". Begin execution:
 1. Dynamically analyze what departments are needed for this specific goal (e.g. Sales, Marketing, IT, Design, Operations, etc. depending on what the user wants).
 2. Set up the departments using setup_department, specifying a department head role.
-3. Hire any required specialist agents using hire_agent with department and reportsTo.
-4. Create necessary actionable tasks with create_task.
-5. Assign tasks to agents with assign_task to start execution.
+3. Hire required specialist agents using hire_agent with department and reportsTo.
+4. Create 2 to 4 concrete, actionable tasks with create_task.
+5. Assign tasks to the specialist agents with assign_task to start execution.
 CRITICAL: Do NOT just describe or discuss the plan in text. Invoke the tools (setup_department, hire_agent, create_task, assign_task) immediately to take action.`,
     });
 
@@ -875,17 +967,42 @@ Description: "${task.description}"`;
       ? `Please review the assigned task "${task.title}" and the CEO's review feedback:\n"${feedback}"\nMake the necessary improvements and report your updated deliverable.`
       : `Please execute your assigned task: "${task.title}". Description: "${task.description}". Produce the required deliverable and report the result.`;
 
-    await agentLoop.run({
-      companyId: company.id,
-      runId: run.id,
-      agent: worker,
-      tools: getWorkerTools(),
-      toolExecutor: executeWorkerTool,
-      maxSteps: 15,
-      abortSignal,
-      onEvent: this.emit.bind(this),
-      systemPromptAddendum: workerAddendum,
-      initialMessage: workerInitialPrompt,
-    });
+    const workerAbortController = new AbortController();
+    const onAbort = () => workerAbortController.abort();
+    abortSignal.addEventListener('abort', onAbort);
+    this.activeTaskWorkers.set(task.id, { abortController: workerAbortController });
+
+    try {
+      await agentLoop.run({
+        companyId: company.id,
+        runId: run.id,
+        agent: worker,
+        tools: getWorkerTools(),
+        toolExecutor: executeWorkerTool,
+        maxSteps: 15,
+        abortSignal: workerAbortController.signal,
+        onEvent: this.emit.bind(this),
+        systemPromptAddendum: workerAddendum,
+        initialMessage: workerInitialPrompt,
+      });
+
+      const currentTask = this.db.getTask(task.id);
+      if (currentTask && currentTask.status === 'in_progress' && !workerAbortController.signal.aborted) {
+        this.db.updateTask(task.id, {
+          status: 'in_review',
+          result: JSON.stringify({ summary: `Worker ${worker.role} finished task execution.` }),
+        });
+        this.emit({
+          runId: run.id,
+          companyId: company.id,
+          type: 'task_status_change',
+          timestamp: new Date().toISOString(),
+          data: { taskId: task.id, taskTitle: task.title, status: 'in_review' },
+        });
+      }
+    } finally {
+      this.activeTaskWorkers.delete(task.id);
+      abortSignal.removeEventListener('abort', onAbort);
+    }
   }
 }

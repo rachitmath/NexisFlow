@@ -15,7 +15,9 @@ import {
   Check,
   Save,
   Sliders,
-  Terminal
+  Terminal,
+  RotateCcw,
+  Trash2
 } from 'lucide-react';
 import { Company, Agent, Task, Approval, Run, ModelInfo, Department } from '@shared/types';
 import { OrgChart } from './OrgChart';
@@ -36,6 +38,8 @@ interface CompanyDashboardProps {
   onOpenSettings?: () => void;
   onUpdateModels?: (ceoModel: string, workerModel: string) => Promise<void>;
   onDeleteAgent?: (agentId: string) => Promise<void>;
+  onRestartCompany?: () => Promise<void>;
+  onDeleteCompany?: () => Promise<void>;
   isRunActive: boolean;
 }
 
@@ -55,6 +59,8 @@ export const CompanyDashboard: React.FC<CompanyDashboardProps> = ({
   onOpenSettings,
   onUpdateModels,
   onDeleteAgent,
+  onRestartCompany,
+  onDeleteCompany,
   isRunActive,
 }) => {
   const completedTasks = tasks.filter(t => t.status === 'completed').length;
@@ -130,30 +136,60 @@ export const CompanyDashboard: React.FC<CompanyDashboardProps> = ({
           </div>
 
           {/* Quick Action Buttons */}
-          <div className="flex items-center space-x-3 shrink-0">
+          <div className="flex items-center space-x-2.5 shrink-0 flex-wrap gap-y-2">
+            {onRestartCompany && (
+              <button
+                onClick={async () => {
+                  if (window.confirm(`Are you sure you want to RESTART "${company.name}"?\n\nThis will reset the company by deleting all departments, specialist agents, tasks, runs, messages, approvals, notes, and workspace files.\n\nThe CEO and company will be kept in a clean initial state with $0.00 spend.`)) {
+                    await onRestartCompany();
+                  }
+                }}
+                className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-amber-950/40 text-slate-300 hover:text-amber-350 border border-slate-700 hover:border-amber-700/50 text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer"
+                title="Reset company to clean state (preserves CEO, wipes departments, workers, tasks & workspace)"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-amber-400" />
+                <span>Restart</span>
+              </button>
+            )}
+
+            {onDeleteCompany && (
+              <button
+                onClick={async () => {
+                  if (window.confirm(`Are you sure you want to PERMANENTLY DELETE "${company.name}"?\n\nThis will remove the entire company, all its database records, and its workspace folder permanently.`)) {
+                    await onDeleteCompany();
+                  }
+                }}
+                className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-rose-950/40 text-slate-300 hover:text-rose-350 border border-slate-700 hover:border-rose-700/50 text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer"
+                title="Permanently delete this company and its workspace"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span>Delete</span>
+              </button>
+            )}
+
             <button
               onClick={() => onOpenLogs ? onOpenLogs() : onNavigateTab('logs')}
-              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center space-x-2 transition-all cursor-pointer"
+              className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer"
               title="View Real-Time and Historical Execution Logs"
             >
-              <Terminal className="w-4 h-4 text-indigo-400" />
-              <span>Execution Logs</span>
+              <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Logs</span>
             </button>
 
             <button
               onClick={onOpenCeoChat}
-              className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center space-x-2 transition-all cursor-pointer"
+              className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer"
             >
-              <MessageSquare className="w-4 h-4 text-indigo-400" />
-              <span>Chat with CEO</span>
+              <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Chat</span>
             </button>
 
             <button
               onClick={onStartRun}
-              className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 flex items-center space-x-2 transition-all transform active:scale-95 cursor-pointer"
+              className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 flex items-center space-x-1.5 transition-all transform active:scale-95 cursor-pointer"
             >
-              <Play className="w-4 h-4 fill-current" />
-              <span>{isRunActive ? 'View Active Run' : 'Start Goal Run'}</span>
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>{isRunActive ? 'View Run' : 'Start Goal'}</span>
             </button>
           </div>
         </div>

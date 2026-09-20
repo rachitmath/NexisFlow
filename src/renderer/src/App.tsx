@@ -21,7 +21,8 @@ import {
   RunEvent, 
   Message,
   CreateCompanyDTO,
-  Department
+  Department,
+  TaskStatus
 } from '@shared/types';
 import { BUILTIN_MODELS } from '@shared/constants';
 
@@ -266,11 +267,61 @@ export const App: React.FC = () => {
     if (selectedCompany) await loadCompanyDetail(selectedCompany.id);
   };
 
-  const handleCreateTask = async (title: string, description: string, assignedTo?: string) => {
+  const handleRestartCompany = async () => {
     if (!api || !selectedCompany) return;
-    await api.createTask(selectedCompany.id, { title, description, assignedTo });
+    try {
+      if (activeRun) {
+        await api.stopRun(activeRun.id);
+        setActiveRun(null);
+        setIsRunModalOpen(false);
+      }
+      await api.restartCompany(selectedCompany.id);
+      await loadCompanyDetail(selectedCompany.id);
+      const comps = await api.listCompanies();
+      setCompanies(comps);
+    } catch (err) {
+      console.error('Failed to restart company:', err);
+    }
+  };
+
+  const handleDeleteCompany = async () => {
+    if (!api || !selectedCompany) return;
+    try {
+      if (activeRun) {
+        await api.stopRun(activeRun.id);
+        setActiveRun(null);
+        setIsRunModalOpen(false);
+      }
+      await api.deleteCompany(selectedCompany.id);
+      const comps = await api.listCompanies();
+      setCompanies(comps);
+      if (comps.length > 0) {
+        setSelectedCompany(comps[0]);
+      } else {
+        setSelectedCompany(null);
+        setIsNewCompanyOpen(true);
+      }
+    } catch (err) {
+      console.error('Failed to delete company:', err);
+    }
+  };
+
+  const handleCreateTask = async (title: string, description: string, assignedTo?: string, status?: TaskStatus) => {
+    if (!api || !selectedCompany) return;
+    await api.createTask(selectedCompany.id, { title, description, assignedTo, status });
     const updated = await api.listTasks(selectedCompany.id);
     setTasks(updated);
+  };
+
+  const handleUpdateTask = async (taskId: string, updates: Partial<Task>) => {
+    if (!api || !selectedCompany) return;
+    try {
+      await api.updateTask(taskId, updates);
+      const updated = await api.listTasks(selectedCompany.id);
+      setTasks(updated);
+    } catch (err) {
+      console.error('Failed to update task:', err);
+    }
   };
 
   const handleDeleteTask = async (taskId: string) => {
@@ -462,6 +513,8 @@ export const App: React.FC = () => {
                     onOpenSettings={() => setIsSettingsOpen(true)}
                     onUpdateModels={handleUpdateCompanyModels}
                     onDeleteAgent={handleDeleteAgent}
+                    onRestartCompany={handleRestartCompany}
+                    onDeleteCompany={handleDeleteCompany}
                     isRunActive={activeRun?.status === 'running' || activeRun?.status === 'paused'}
                   />
                 )}
@@ -471,6 +524,7 @@ export const App: React.FC = () => {
                     tasks={tasks}
                     agents={agents}
                     onCreateTask={handleCreateTask}
+                    onUpdateTask={handleUpdateTask}
                     onDeleteTask={handleDeleteTask}
                   />
                 )}

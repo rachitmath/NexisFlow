@@ -196,8 +196,52 @@ Operational Rules:
   }
 
   public deleteCompany(id: string): boolean {
-    const res = this.db.prepare('DELETE FROM companies WHERE id = ?').run(id);
-    return res.changes > 0;
+    let deleted = false;
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM tasks WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM messages WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM approvals WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM memory_notes WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM usage WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM runs WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM agents WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM departments WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM goals WHERE company_id = ?').run(id);
+      const res = this.db.prepare('DELETE FROM companies WHERE id = ?').run(id);
+      deleted = res.changes > 0;
+    })();
+    return deleted;
+  }
+
+  public restartCompany(id: string): Company | null {
+    const company = this.getCompany(id);
+    if (!company) return null;
+
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM tasks WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM messages WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM approvals WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM memory_notes WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM usage WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM runs WHERE company_id = ?').run(id);
+      this.db.prepare('DELETE FROM departments WHERE company_id = ?').run(id);
+      this.db.prepare("DELETE FROM agents WHERE company_id = ? AND LOWER(role) != 'ceo'").run(id);
+
+      // Reset CEO
+      this.db.prepare(`
+        UPDATE agents 
+        SET status = 'active', department_id = NULL, reports_to = NULL, level = 'executive'
+        WHERE company_id = ? AND LOWER(role) = 'ceo'
+      `).run(id);
+
+      // Reset company total spent
+      this.db.prepare('UPDATE companies SET total_spent = 0.0, updated_at = ? WHERE id = ?').run(
+        new Date().toISOString(),
+        id
+      );
+    })();
+
+    return this.getCompany(id);
   }
 
   // --- Departments ---
@@ -329,6 +373,11 @@ Operational Rules:
 
   public findAgentByRole(companyId: string, role: string): Agent | null {
     const r = this.db.prepare('SELECT * FROM agents WHERE company_id = ? AND LOWER(role) = LOWER(?) LIMIT 1').get(companyId, role) as any;
+    return r ? this.mapAgentRow(r) : null;
+  }
+
+  public getAgent(id: string): Agent | null {
+    const r = this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as any;
     return r ? this.mapAgentRow(r) : null;
   }
 
