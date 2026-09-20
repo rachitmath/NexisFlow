@@ -69,7 +69,11 @@ export class WorkspaceManager {
   }
 
   public writeWorkspaceFile(companyId: string, relativePath: string, content: string): string {
-    const normalized = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!relativePath || typeof relativePath !== 'string' || !relativePath.trim()) {
+      throw new Error('Invalid file path: path must be a non-empty string.');
+    }
+    const safeContent = typeof content === 'string' ? content : (content != null ? String(content) : '');
+    const normalized = relativePath.trim().replace(/\\/g, '/').replace(/^\/+/, '');
     let targetRelative = normalized;
     if (!normalized.includes('/') && !normalized.startsWith('notes/') && !normalized.startsWith('deliverables/')) {
       targetRelative = `deliverables/${normalized}`;
@@ -80,12 +84,15 @@ export class WorkspaceManager {
     if (!fs.existsSync(parentDir)) {
       fs.mkdirSync(parentDir, { recursive: true });
     }
-    fs.writeFileSync(fullPath, content, 'utf8');
+    fs.writeFileSync(fullPath, safeContent, 'utf8');
     return fullPath;
   }
 
   public readWorkspaceFile(companyId: string, relativePath: string): string {
-    const clean = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!relativePath || typeof relativePath !== 'string' || !relativePath.trim()) {
+      throw new Error('Invalid file path: path must be a non-empty string.');
+    }
+    const clean = relativePath.trim().replace(/\\/g, '/').replace(/^\/+/, '');
 
     // 1. Try resolving directly in company workspace
     const fullPath = this.resolveSafePath(companyId, clean);

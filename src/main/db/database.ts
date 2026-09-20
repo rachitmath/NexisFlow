@@ -163,6 +163,9 @@ Operational Rules:
       now
     );
 
+    // Seed default departments based on chosen template
+    this.seedDefaultDepartments(id, dto.template || 'startup');
+
     return this.getCompany(id)!;
   }
 
@@ -241,7 +244,46 @@ Operational Rules:
       );
     })();
 
+    // Re-seed default departments
+    this.seedDefaultDepartments(id, company.template || 'startup');
+
     return this.getCompany(id);
+  }
+
+  public seedDefaultDepartments(companyId: string, template: string): void {
+    const templates: Record<string, Array<{ name: string; description: string; color: string }>> = {
+      startup: [
+        { name: 'Product & Strategy', description: 'Product roadmap, requirements, and market positioning', color: 'indigo' },
+        { name: 'Engineering & AI', description: 'Technical development, code generation, and implementation', color: 'emerald' },
+        { name: 'Growth & Marketing', description: 'Market research, competitor analysis, and launch strategy', color: 'purple' },
+      ],
+      content_studio: [
+        { name: 'Editorial & Content', description: 'Drafting articles, newsletters, and publication materials', color: 'indigo' },
+        { name: 'Research & Insights', description: 'Topic research, fact checking, and trend analysis', color: 'purple' },
+        { name: 'Media & Distribution', description: 'Multi-channel distribution and asset formatting', color: 'emerald' },
+      ],
+      software_agency: [
+        { name: 'Architecture & Engineering', description: 'System architecture, API design, and backend/frontend coding', color: 'emerald' },
+        { name: 'Product & Specifications', description: 'Technical specification, user stories, and feature scoping', color: 'indigo' },
+        { name: 'Quality Assurance & Testing', description: 'Code review, test verification, and quality audit', color: 'amber' },
+      ],
+      custom: [
+        { name: 'Operations & Strategy', description: 'Core strategic planning and operational direction', color: 'indigo' },
+        { name: 'Domain Execution', description: 'Specialized task delivery and asset production', color: 'emerald' },
+      ],
+    };
+
+    const depts = templates[template] || templates.startup;
+    for (const d of depts) {
+      if (!this.findDepartmentByName(companyId, d.name)) {
+        this.createDepartment({
+          companyId,
+          name: d.name,
+          description: d.description,
+          color: d.color,
+        });
+      }
+    }
   }
 
   // --- Departments ---

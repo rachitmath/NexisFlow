@@ -17,7 +17,10 @@ import {
   Sliders,
   Terminal,
   RotateCcw,
-  Trash2
+  Trash2,
+  Workflow,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { Company, Agent, Task, Approval, Run, ModelInfo, Department } from '@shared/types';
 import { OrgChart } from './OrgChart';
@@ -116,6 +119,56 @@ export const CompanyDashboard: React.FC<CompanyDashboardProps> = ({
 
     return groups.filter(g => g.items.length > 0);
   }, [models]);
+
+  const [showLifecycleDetails, setShowLifecycleDetails] = useState(false);
+
+  const lifecycleSteps = useMemo(() => [
+    {
+      number: 1,
+      title: 'Strategy & Objectives',
+      shortDesc: 'Objective defined, monthly budget capped, CEO model assigned.',
+      status: 'completed' as const,
+      metric: `${company.template.replace(/_/g, ' ')}`,
+      actionText: undefined,
+      onClick: undefined,
+    },
+    {
+      number: 2,
+      title: 'Department Setup',
+      shortDesc: 'Organizational divisions established for specialized execution.',
+      status: departments.length > 0 ? ('completed' as const) : isRunActive ? ('in_progress' as const) : ('pending' as const),
+      metric: `${departments.length} Department${departments.length === 1 ? '' : 's'}`,
+      actionText: undefined,
+      onClick: undefined,
+    },
+    {
+      number: 3,
+      title: 'Specialist Recruitment',
+      shortDesc: 'CEO hires specialist agents with tailored prompts and tools.',
+      status: agents.length > 1 ? ('completed' as const) : isRunActive ? ('in_progress' as const) : ('pending' as const),
+      metric: `${agents.length} Agent${agents.length === 1 ? '' : 's'}`,
+      actionText: undefined,
+      onClick: undefined,
+    },
+    {
+      number: 4,
+      title: 'Task Decomposition',
+      shortDesc: 'Goal broken down into milestone tasks assigned to workers.',
+      status: tasks.length > 0 ? ('completed' as const) : isRunActive ? ('in_progress' as const) : ('pending' as const),
+      metric: `${tasks.length} Task${tasks.length === 1 ? '' : 's'}`,
+      actionText: 'Tasks',
+      onClick: () => onNavigateTab('tasks'),
+    },
+    {
+      number: 5,
+      title: 'Autonomous Delivery',
+      shortDesc: 'Workers produce files in /deliverables, reviewed by CEO.',
+      status: deliverablesCount > 0 ? ('completed' as const) : (inProgressTasks > 0 || isRunActive) ? ('in_progress' as const) : ('pending' as const),
+      metric: `${deliverablesCount} File${deliverablesCount === 1 ? '' : 's'}`,
+      actionText: 'Files',
+      onClick: () => onNavigateTab('deliverables'),
+    },
+  ], [company, departments.length, agents.length, tasks.length, deliverablesCount, inProgressTasks, isRunActive, onNavigateTab]);
 
   return (
     <div className="space-y-6">
@@ -283,6 +336,127 @@ export const CompanyDashboard: React.FC<CompanyDashboardProps> = ({
           <p className="text-xl font-bold text-white tracking-tight">{deliverablesCount}</p>
           <p className="text-[10px] text-slate-500">Saved in company /deliverables</p>
         </div>
+      </div>
+
+      {/* Company Setup & Autonomous Execution Lifecycle */}
+      <div className="p-5 rounded-2xl bg-dark-850 border border-slate-800 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+          <div className="flex items-center space-x-2.5">
+            <div className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400">
+              <Workflow className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-white">Company Setup & Execution Lifecycle</h3>
+              <p className="text-[11px] text-slate-400">
+                5-stage autonomous process from strategic inception to verified deliverable files.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowLifecycleDetails(!showLifecycleDetails)}
+            className="text-xs text-indigo-400 hover:text-indigo-300 flex items-center space-x-1 transition-colors self-start sm:self-auto cursor-pointer"
+          >
+            <span>{showLifecycleDetails ? 'Hide Guide' : 'Explain Lifecycle'}</span>
+            {showLifecycleDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+
+        {/* 5-Step Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          {lifecycleSteps.map((step) => {
+            const isDone = step.status === 'completed';
+            const isActive = step.status === 'in_progress';
+            return (
+              <div
+                key={step.number}
+                onClick={step.onClick}
+                className={`p-3.5 rounded-xl border transition-all flex flex-col justify-between ${
+                  step.onClick ? 'cursor-pointer hover:scale-[1.02]' : ''
+                } ${
+                  isDone
+                    ? 'border-emerald-500/30 bg-emerald-500/5 hover:border-emerald-500/50'
+                    : isActive
+                    ? 'border-indigo-500/50 bg-indigo-500/10 shadow-md shadow-indigo-500/10'
+                    : 'border-slate-800 bg-slate-900/50 hover:border-slate-700'
+                }`}
+              >
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center ${
+                      isDone
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                        : isActive
+                        ? 'bg-indigo-500 text-white animate-pulse'
+                        : 'bg-slate-800 text-slate-400 border border-slate-700'
+                    }`}>
+                      {isDone ? <Check className="w-3.5 h-3.5" /> : step.number}
+                    </span>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
+                      isDone
+                        ? 'bg-emerald-500/10 text-emerald-400'
+                        : isActive
+                        ? 'bg-indigo-500/20 text-indigo-300'
+                        : 'bg-slate-800 text-slate-500'
+                    }`}>
+                      {isDone ? 'Completed' : isActive ? 'Active' : 'Pending'}
+                    </span>
+                  </div>
+
+                  <div>
+                    <h4 className="text-xs font-bold text-white tracking-tight">{step.title}</h4>
+                    <p className="text-[11px] text-slate-400 mt-1 line-clamp-2 leading-tight">
+                      {step.shortDesc}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
+                  <span className={`font-medium ${isDone ? 'text-emerald-400' : isActive ? 'text-indigo-400' : 'text-slate-500'}`}>
+                    {step.metric}
+                  </span>
+                  {step.actionText && (
+                    <span className="text-slate-400 group-hover:text-white flex items-center gap-0.5 font-semibold">
+                      {step.actionText} &rarr;
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Detailed Explanation Drawer */}
+        {showLifecycleDetails && (
+          <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 space-y-3 text-xs text-slate-300 leading-relaxed">
+            <h4 className="font-semibold text-white flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-indigo-400" />
+              How Your AI Company Operates: Step-by-Step
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px] text-slate-400">
+              <div className="space-y-1 bg-dark-850 p-3 rounded-lg border border-slate-800">
+                <span className="text-white font-semibold">1. Strategy & Objective Alignment:</span>
+                <p>When you set up a company, you establish the mission statement, budget ceilings, and select the CEO Orchestrator & Worker LLM models.</p>
+              </div>
+              <div className="space-y-1 bg-dark-850 p-3 rounded-lg border border-slate-800">
+                <span className="text-white font-semibold">2. Department Hierarchy:</span>
+                <p>Core functional departments (e.g., Product & Strategy, Engineering, Growth) are established to organize tasks, responsibilities, and reporting lines.</p>
+              </div>
+              <div className="space-y-1 bg-dark-850 p-3 rounded-lg border border-slate-800">
+                <span className="text-white font-semibold">3. Specialist Recruitment:</span>
+                <p>The CEO reviews existing roster members and hires specialized AI agents under departments, equipping them with customized domain prompts and tools.</p>
+              </div>
+              <div className="space-y-1 bg-dark-850 p-3 rounded-lg border border-slate-800">
+                <span className="text-white font-semibold">4. Task Decomposition & Assignment:</span>
+                <p>The CEO breaks the company objective down into clear, granular tasks with rich requirements and assigns them to the appropriate specialists.</p>
+              </div>
+              <div className="space-y-1 bg-dark-850 p-3 rounded-lg border border-slate-800 md:col-span-2">
+                <span className="text-white font-semibold">5. Autonomous Execution & Quality Delivery:</span>
+                <p>Agents execute in parallel, generating deliverable files in your company workspace. The CEO inspects worker outputs, requesting revisions if necessary, and accepts final deliverables upon quality satisfaction.</p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Model Selection & Agent Engine Configuration */}

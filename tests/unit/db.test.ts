@@ -228,8 +228,10 @@ describe('AppDatabase (better-sqlite3)', () => {
 
     // 4. Verify department retrieval
     const depts = db.listDepartments(comp.id);
-    expect(depts.length).toBe(1);
-    expect(depts[0].headAgentId).toBe(head.id);
+    expect(depts.length).toBeGreaterThanOrEqual(1);
+    const foundDept = depts.find(d => d.id === dept.id);
+    expect(foundDept).toBeDefined();
+    expect(foundDept?.headAgentId).toBe(head.id);
 
     // 5. Test resilient agent lookups (by ID, exact role, case-insensitive, partial)
     expect(db.findAgentByIdOrRole(comp.id, head.id)?.id).toBe(head.id);

@@ -31,7 +31,7 @@ export class OpenAIAdapter implements IProviderAdapter {
     options: ProviderChatOptions
   ): Promise<ProviderChatResult> {
     const openai = this.getClient();
-    const model = openai(options.model || 'gpt-4o');
+    const model = openai.chat(options.model || 'gpt-4o');
 
     const toolsMap: Record<string, any> = {};
     for (const t of tools) {
@@ -131,16 +131,57 @@ export class OpenAIAdapter implements IProviderAdapter {
           options.onToken(delta);
         }
       } else if (chunk.type === 'tool-call') {
+        let rawArgs: any = (chunk as any).input ?? (chunk as any).args ?? {};
+        if (typeof rawArgs === 'string') {
+          try {
+            rawArgs = JSON.parse(rawArgs);
+          } catch {
+            rawArgs = {};
+          }
+        }
         const tc = {
           id: (chunk as any).toolCallId,
           name: (chunk as any).toolName,
-          args: ((chunk as any).input || (chunk as any).args || {}) as Record<string, unknown>,
+          args: (rawArgs && typeof rawArgs === 'object') ? rawArgs : {},
         };
         toolCalls.push(tc);
         if (options.onToolCall) {
           options.onToolCall(tc);
         }
       }
+    }
+
+    try {
+      const awaitedCalls = await result.toolCalls;
+      if (Array.isArray(awaitedCalls) && awaitedCalls.length > 0) {
+        if (toolCalls.length === 0) {
+          for (const ac of awaitedCalls) {
+            let inputArgs: any = (ac as any).input ?? (ac as any).args ?? {};
+            if (typeof inputArgs === 'string') {
+              try { inputArgs = JSON.parse(inputArgs); } catch { inputArgs = {}; }
+            }
+            toolCalls.push({
+              id: ac.toolCallId || 'call_' + Math.random().toString(36).substring(2, 9),
+              name: ac.toolName,
+              args: (inputArgs && typeof inputArgs === 'object') ? inputArgs : {},
+            });
+          }
+        } else {
+          for (let i = 0; i < toolCalls.length; i++) {
+            if (Object.keys(toolCalls[i].args || {}).length === 0 && awaitedCalls[i]) {
+              let inputArgs: any = (awaitedCalls[i] as any).input ?? (awaitedCalls[i] as any).args ?? {};
+              if (typeof inputArgs === 'string') {
+                try { inputArgs = JSON.parse(inputArgs); } catch { inputArgs = {}; }
+              }
+              if (inputArgs && typeof inputArgs === 'object' && Object.keys(inputArgs).length > 0) {
+                toolCalls[i].args = inputArgs;
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Reconcile non-fatal
     }
 
     const usage = await result.usage;

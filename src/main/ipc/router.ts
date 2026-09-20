@@ -174,8 +174,12 @@ export function registerIpcHandlers(
       });
       agents = db.listAgents(id);
     }
+    let departments = db.listDepartments(id);
+    if (departments.length === 0) {
+      db.seedDefaultDepartments(id, company.template || 'startup');
+      departments = db.listDepartments(id);
+    }
     const tasks = db.listTasks(id);
-    const departments = db.listDepartments(id);
     const recentRuns = db.listRuns(id).slice(0, 5);
     const pendingApprovals = db.listPendingApprovals(id);
     const deliverables = workspace.listDeliverables(id);

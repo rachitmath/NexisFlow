@@ -481,7 +481,10 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
     const executeCeoTool = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
       if (name === 'setup_department') {
         const rawName = args.name || args.department || args.departmentName;
-        const deptName = (typeof rawName === 'string' && rawName.trim()) ? rawName.trim() : 'Operations';
+        if (!rawName || typeof rawName !== 'string' || !rawName.trim()) {
+          return { error: 'setup_department requires a "name" string for the department (e.g. "Marketing & Growth", "Sales & Outreach", "Product & Engineering").' };
+        }
+        const deptName = rawName.trim();
         const description = (typeof args.description === 'string') ? args.description.trim() : undefined;
         const color = (typeof args.color === 'string') ? args.color : undefined;
 
@@ -495,7 +498,8 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
           });
         }
 
-        const headRole = (typeof args.headRole === 'string' && args.headRole.trim()) ? args.headRole.trim() : null;
+        const rawHeadRole = args.headRole || args.head_role || args.head || args.leaderRole;
+        const headRole = (typeof rawHeadRole === 'string' && rawHeadRole.trim()) ? rawHeadRole.trim() : null;
         let headAgent: Agent | null = null;
 
         if (headRole) {
@@ -509,7 +513,7 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
               companyId: company.id,
               role: headRole,
               systemPrompt: headPrompt,
-              model: company.workerModel || company.ceoModel || 'gemini-2.0-flash',
+              model: company.workerModel || company.ceoModel || 'gemini-1.5-flash',
               allowedTools: ['read_file', 'write_file', 'report_result'],
               status: 'active',
               createdBy: 'ceo',
@@ -544,12 +548,28 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
 
       if (name === 'create_task') {
         const rawTitle = args.title || args.name || args.task;
-        const title = (typeof rawTitle === 'string' && rawTitle.trim()) ? rawTitle.trim() : 'Company Objective Task';
+        if (!rawTitle || typeof rawTitle !== 'string' || !rawTitle.trim() || rawTitle.trim().toLowerCase() === 'company objective task') {
+          return { error: 'create_task requires a specific, descriptive "title" (e.g. "Build ATS Parser Engine", "Draft B2B Cold Outreach Sequence", "Set Up Database Schema"). Do not use generic placeholder titles.' };
+        }
+        const title = rawTitle.trim();
+
+        // Check deduplication
+        const existingTask = this.db.listTasks(company.id).find(t => t.title.trim().toLowerCase() === title.toLowerCase());
+        if (existingTask) {
+          return {
+            success: true,
+            taskId: existingTask.id,
+            taskTitle: existingTask.title,
+            status: existingTask.status,
+            message: `Task "${title}" already exists on the task board. Do not create duplicates. Use assign_task to assign it.`,
+          };
+        }
+
         const rawDesc = args.description || args.details || args.prompt;
         let description = (typeof rawDesc === 'string' && rawDesc.trim()) ? rawDesc.trim() : '';
 
         if (!description || description.toLowerCase() === title.toLowerCase()) {
-          description = `Execute deliverable for "${title}". Requirements: Formulate strategy, generate needed documents, conduct deep research or code implementation, and output high-quality deliverables into the workspace for CEO review.`;
+          description = `Execute deliverable for "${title}". Formulate domain strategy, generate required files into /deliverables, and report output for CEO review.`;
         }
 
         let departmentId: string | null = null;
@@ -572,12 +592,15 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
           timestamp: new Date().toISOString(),
           data: { taskId: task.id, taskTitle: task.title, status: 'todo' },
         });
-        return { success: true, taskId: task.id, status: 'created' };
+        return { success: true, taskId: task.id, taskTitle: task.title, status: 'created' };
       }
 
       if (name === 'hire_agent') {
         const rawRole = args.role || args.name || args.title || args.role_name || args.agentRole || args.job_title;
-        const role = (typeof rawRole === 'string' && rawRole.trim()) ? rawRole.trim() : 'Specialist';
+        if (!rawRole || typeof rawRole !== 'string' || !rawRole.trim() || rawRole.trim().toLowerCase() === 'specialist') {
+          return { error: 'hire_agent requires a specific role (e.g. "Full Stack Developer", "Lead SDR", "Content Strategist"). Do not hire generic "Specialist".' };
+        }
+        const role = rawRole.trim();
         const rawPrompt = args.prompt || args.systemPrompt || args.description || args.instructions;
         const prompt = (typeof rawPrompt === 'string' && rawPrompt.trim())
           ? rawPrompt.trim()
@@ -625,7 +648,7 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
               level: level ?? existing.level,
             });
           }
-          return { success: true, agentId: existing.id, reused: true, message: `Reused existing agent for role ${role}` };
+          return { success: true, agentId: existing.id, role: existing.role, reused: true, message: `Agent with role "${role}" already exists on roster.` };
         }
 
         // Check hiring threshold approval
@@ -649,7 +672,7 @@ You are directly speaking with the founder/user. Respond thoughtfully, strategic
           companyId: company.id,
           role,
           systemPrompt: prompt,
-          model: company.workerModel || 'gpt-4o-mini',
+          model: company.workerModel || company.ceoModel || 'gemini-1.5-flash',
           allowedTools,
           status: 'active',
           createdBy: 'ceo',
@@ -897,7 +920,7 @@ CRITICAL: Do NOT just describe or discuss the plan in text. Invoke the tools (se
 
     const executeWorkerTool = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
       if (name === 'read_file') {
-        const filePath = args.path as string;
+        const filePath = (args.path || args.filePath || args.filename || args.file) as string;
         try {
           const content = this.workspace.readWorkspaceFile(company.id, filePath);
           return { success: true, path: filePath, content };
@@ -907,8 +930,8 @@ CRITICAL: Do NOT just describe or discuss the plan in text. Invoke the tools (se
       }
 
       if (name === 'write_file') {
-        const filePath = args.path as string;
-        const content = args.content as string;
+        const filePath = (args.path || args.filePath || args.filename || args.file) as string;
+        const content = (args.content || args.data || args.text || args.body || '') as string;
         try {
           const savedPath = this.workspace.writeWorkspaceFile(company.id, filePath, content);
           return { success: true, path: filePath, savedPath };
@@ -923,9 +946,9 @@ CRITICAL: Do NOT just describe or discuss the plan in text. Invoke the tools (se
       }
 
       if (name === 'report_result') {
-        const summary = args.summary as string;
-        const deliverablePath = args.deliverablePath as string | undefined;
-        const deliverableContent = args.deliverableContent as string | undefined;
+        const summary = (args.summary || args.result || args.message || 'Task completed.') as string;
+        const deliverablePath = (args.deliverablePath || args.deliverable_path || args.path || args.filePath) as string | undefined;
+        const deliverableContent = (args.deliverableContent || args.deliverable_content || args.content || args.data) as string | undefined;
 
         // Automatically persist deliverable if content provided
         if (deliverablePath && deliverableContent) {
