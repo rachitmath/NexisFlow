@@ -119,90 +119,114 @@ export class OpenRouterAdapter implements IProviderAdapter {
       };
     });
 
-    const result = streamText({
-      model,
-      system: systemPrompt,
-      messages: coreMessages,
-      tools: Object.keys(toolsMap).length > 0 ? toolsMap : undefined,
-      temperature: options.temperature ?? 0.7,
-      maxOutputTokens: options.maxTokens ?? 4096,
-      abortSignal: options.abortSignal,
-    });
+    const runStream = async (maxTokensToUse: number): Promise<ProviderChatResult> => {
+      const result = streamText({
+        model,
+        system: systemPrompt,
+        messages: coreMessages,
+        tools: Object.keys(toolsMap).length > 0 ? toolsMap : undefined,
+        temperature: options.temperature ?? 0.7,
+        maxOutputTokens: maxTokensToUse,
+        abortSignal: options.abortSignal,
+      });
 
-    let fullText = '';
-    const toolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
+      let fullText = '';
+      const toolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
 
-    for await (const chunk of result.fullStream) {
-      if (chunk.type === 'text-delta') {
-        fullText += chunk.text;
-        options.onToken?.(chunk.text);
-      } else if (chunk.type === 'tool-call') {
-        let rawArgs: any = (chunk as any).input ?? (chunk as any).args ?? {};
-        if (typeof rawArgs === 'string') {
-          try {
-            rawArgs = JSON.parse(rawArgs);
-          } catch {
-            rawArgs = {};
-          }
-        }
-        const tc = {
-          id: chunk.toolCallId,
-          name: chunk.toolName,
-          args: (rawArgs && typeof rawArgs === 'object') ? rawArgs : {},
-        };
-        toolCalls.push(tc);
-        options.onToolCall?.(tc);
-      }
-    }
-
-    // Reconcile toolCalls from result.toolCalls if needed
-    try {
-      const awaitedCalls = await result.toolCalls;
-      if (Array.isArray(awaitedCalls) && awaitedCalls.length > 0) {
-        if (toolCalls.length === 0) {
-          for (const ac of awaitedCalls) {
-            let inputArgs: any = (ac as any).input ?? (ac as any).args ?? {};
-            if (typeof inputArgs === 'string') {
-              try { inputArgs = JSON.parse(inputArgs); } catch { inputArgs = {}; }
+      for await (const chunk of result.fullStream) {
+        if (chunk.type === 'error') {
+          const err = (chunk as any).error;
+          const msg = err?.message || (typeof err === 'string' ? err : 'OpenRouter stream error occurred.');
+          throw new Error(msg);
+        } else if (chunk.type === 'text-delta') {
+          fullText += chunk.text;
+          options.onToken?.(chunk.text);
+        } else if (chunk.type === 'tool-call') {
+          let rawArgs: any = (chunk as any).input ?? (chunk as any).args ?? {};
+          if (typeof rawArgs === 'string') {
+            try {
+              rawArgs = JSON.parse(rawArgs);
+            } catch {
+              rawArgs = {};
             }
-            toolCalls.push({
-              id: ac.toolCallId || 'call_' + Math.random().toString(36).substring(2, 9),
-              name: ac.toolName,
-              args: (inputArgs && typeof inputArgs === 'object') ? inputArgs : {},
-            });
           }
-        } else {
-          for (let i = 0; i < toolCalls.length; i++) {
-            if (Object.keys(toolCalls[i].args || {}).length === 0 && awaitedCalls[i]) {
-              let inputArgs: any = (awaitedCalls[i] as any).input ?? (awaitedCalls[i] as any).args ?? {};
+          const tc = {
+            id: chunk.toolCallId,
+            name: chunk.toolName,
+            args: (rawArgs && typeof rawArgs === 'object') ? rawArgs : {},
+          };
+          toolCalls.push(tc);
+          options.onToolCall?.(tc);
+        }
+      }
+
+      // Reconcile toolCalls from result.toolCalls if needed
+      try {
+        const awaitedCalls = await result.toolCalls;
+        if (Array.isArray(awaitedCalls) && awaitedCalls.length > 0) {
+          if (toolCalls.length === 0) {
+            for (const ac of awaitedCalls) {
+              let inputArgs: any = (ac as any).input ?? (ac as any).args ?? {};
               if (typeof inputArgs === 'string') {
                 try { inputArgs = JSON.parse(inputArgs); } catch { inputArgs = {}; }
               }
-              if (inputArgs && typeof inputArgs === 'object' && Object.keys(inputArgs).length > 0) {
-                toolCalls[i].args = inputArgs;
+              toolCalls.push({
+                id: ac.toolCallId || 'call_' + Math.random().toString(36).substring(2, 9),
+                name: ac.toolName,
+                args: (inputArgs && typeof inputArgs === 'object') ? inputArgs : {},
+              });
+            }
+          } else {
+            for (let i = 0; i < toolCalls.length; i++) {
+              if (Object.keys(toolCalls[i].args || {}).length === 0 && awaitedCalls[i]) {
+                let inputArgs: any = (awaitedCalls[i] as any).input ?? (awaitedCalls[i] as any).args ?? {};
+                if (typeof inputArgs === 'string') {
+                  try { inputArgs = JSON.parse(inputArgs); } catch { inputArgs = {}; }
+                }
+                if (inputArgs && typeof inputArgs === 'object' && Object.keys(inputArgs).length > 0) {
+                  toolCalls[i].args = inputArgs;
+                }
               }
             }
           }
         }
+      } catch {
+        // Reconcile non-fatal
       }
-    } catch {
-      // Reconcile non-fatal
-    }
 
-    const usage = await result.usage;
-    const promptTokens = usage?.inputTokens ?? (usage as any)?.promptTokens ?? 0;
-    const completionTokens = usage?.outputTokens ?? (usage as any)?.completionTokens ?? 0;
-    const totalTokens = usage?.totalTokens ?? (promptTokens + completionTokens);
+      const usage = await result.usage;
+      const promptTokens = usage?.inputTokens ?? (usage as any)?.promptTokens ?? 0;
+      const completionTokens = usage?.outputTokens ?? (usage as any)?.completionTokens ?? 0;
+      const totalTokens = usage?.totalTokens ?? (promptTokens + completionTokens);
 
-    return {
-      text: fullText,
-      toolCalls,
-      usage: {
-        promptTokens,
-        completionTokens,
-        totalTokens,
-      },
+      return {
+        text: fullText,
+        toolCalls,
+        usage: {
+          promptTokens,
+          completionTokens,
+          totalTokens,
+        },
+      };
     };
+
+    // Default to 2000 max tokens to stay within typical OpenRouter key limits
+    const initialMaxTokens = options.maxTokens ?? 2000;
+    try {
+      return await runStream(initialMaxTokens);
+    } catch (err: any) {
+      const errMsg = err?.message || (typeof err === 'string' ? err : '');
+      // If OpenRouter returns credit / affordability error (e.g. "can only afford 3439")
+      const match = errMsg.match(/can only afford (\d+)/i);
+      if (match && match[1]) {
+        const affordable = parseInt(match[1], 10);
+        if (affordable >= 150) {
+          const safeBudget = Math.max(100, Math.floor(affordable * 0.9));
+          return await runStream(safeBudget);
+        }
+      }
+      throw err;
+    }
   }
 
   public async testConnection(modelId: string = 'deepseek/deepseek-chat'): Promise<{ success: boolean; latencyMs?: number; error?: string }> {
